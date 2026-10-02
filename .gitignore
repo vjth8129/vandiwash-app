@@ -39,3 +39,10 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# built app packages
+*.apk
+*.aab
+
+# release signing key (back it up somewhere safe; never commit)
+/credentials/
