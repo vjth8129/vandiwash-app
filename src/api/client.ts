@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import { getItem, setItem } from '@/lib/storage';
 import type { ApiEnvelope, Paged, TokenPair } from './types';
 
-export const REMOTE_API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://3-110-172-236.nip.io/api/v1';
+export const REMOTE_API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://65-1-30-38.nip.io/api/v1';
 
 // In the web dev server, go through the same-origin proxy in metro.config.js
 // (the API doesn't allow browser CORS requests from localhost).

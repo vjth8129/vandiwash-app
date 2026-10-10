@@ -1,7 +1,7 @@
 # Car Wash Staff
 
 React Native (Expo SDK 57 + Expo Router + TypeScript) app for car wash staff, built on the
-[Car Wash Management API](https://3-110-172-236.nip.io/api/docs/).
+[Car Wash Management API](https://65-1-30-38.nip.io/api/docs/).
 
 ## What staff can do
 
