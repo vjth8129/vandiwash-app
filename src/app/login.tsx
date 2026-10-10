@@ -45,7 +45,7 @@ export default function LoginScreen() {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
         <ScrollView contentContainerStyle={s.container} keyboardShouldPersistTaps="handled">
           <Image source={require('../../assets/logo.png')} style={s.logo} accessibilityIgnoresInvertColors />
-          <Text style={s.title}>VandiWash</Text>
+          <Text style={s.title}>Vahanly</Text>
           <Text style={s.subtitle}>Sign in to manage today&apos;s washes</Text>
 
           <AccountField

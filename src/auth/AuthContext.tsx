@@ -39,7 +39,7 @@ const AuthContext = createContext<AuthValue | null>(null);
 
 /** Platform admins manage car washes from the web admin portal, not this staff app. */
 const PLATFORM_ADMIN_ROLE = 'SUPER_ADMIN';
-const PLATFORM_ADMIN_MESSAGE = 'Platform admin accounts sign in on the VandiWash Admin portal, not the app.';
+const PLATFORM_ADMIN_MESSAGE = 'Platform admin accounts sign in on the Vahanly Admin portal, not the app.';
 
 class PlatformAdminError extends Error {
   constructor() {
