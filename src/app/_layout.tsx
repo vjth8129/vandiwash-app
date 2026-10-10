@@ -62,19 +62,17 @@ function RootNavigator() {
       }
       screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
       {/* An admin-set password must be replaced before the rest of the app opens. */}
+      {/* Separate screens for forced and voluntary changes: when the forced change succeeds,
+          set-password's guard turns off and the router redirects into (app) by itself. */}
       <Stack.Protected guard={signedIn && !mustChangePassword}>
         <Stack.Screen name="(app)" />
-      </Stack.Protected>
-      <Stack.Protected guard={signedIn}>
         <Stack.Screen
           name="change-password"
-          options={{
-            headerShown: !mustChangePassword,
-            title: 'Change password',
-            headerBackTitle: 'Back',
-            gestureEnabled: !mustChangePassword,
-          }}
+          options={{ headerShown: true, title: 'Change password', headerBackTitle: 'Back' }}
         />
+      </Stack.Protected>
+      <Stack.Protected guard={signedIn && mustChangePassword}>
+        <Stack.Screen name="set-password" options={{ gestureEnabled: false }} />
       </Stack.Protected>
       <Stack.Protected guard={!signedIn}>
         <Stack.Screen name="login" />

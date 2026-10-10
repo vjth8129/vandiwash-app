@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { PLATE_STATES, type PlateParts } from '@/lib/plates';
+import { PLATE_FORMATS_HINT, PLATE_STATES, type PlateParts } from '@/lib/plates';
 import { PickerSheet } from './PickerSheet';
 import { colors, space } from './theme';
 import { styles as ui } from './ui';
@@ -18,7 +18,7 @@ type Props = {
 
 /**
  * Vehicle number in four parts: searchable state code · district (07) · series (AB) · number (1234).
- * "Enter manually" swaps to one free-text box for plates in any other format.
+ * "Enter manually" swaps to one free-text box, e.g. for Bharat series plates (25 BH 0345 CD).
  */
 export function VehicleNumberInput({ label, value, onChange, error }: Props) {
   const [picking, setPicking] = useState(false);
@@ -63,7 +63,7 @@ export function VehicleNumberInput({ label, value, onChange, error }: Props) {
           ref={manualRef}
           value={value.manual ?? ''}
           onChangeText={(t) => onChange({ ...value, manual: t.toUpperCase() })}
-          placeholder="Any format, e.g. KL 7 1234"
+          placeholder="e.g. 25 BH 0345 CD"
           placeholderTextColor="#98A2B3"
           autoCapitalize="characters"
           autoCorrect={false}
@@ -124,7 +124,11 @@ export function VehicleNumberInput({ label, value, onChange, error }: Props) {
           />
         </View>
       )}
-      {error ? <Text style={ui.errorText}>{error}</Text> : null}
+      {error ? (
+        <Text style={ui.errorText}>{error}</Text>
+      ) : manual ? (
+        <Text style={ui.hint}>{PLATE_FORMATS_HINT}</Text>
+      ) : null}
 
       <PickerSheet
         visible={picking}

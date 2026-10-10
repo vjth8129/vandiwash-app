@@ -5,10 +5,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { errorMessage } from '@/api';
 import { useAuth } from '@/auth/AuthContext';
-import { AccountField, toAccountIdentifier, type AccountMode } from '@/components/AccountField';
+import { AccountField, accountError, toAccountIdentifier, type AccountMode } from '@/components/AccountField';
 import { colors, space } from '@/components/theme';
 import { toast } from '@/components/Toast';
 import { Button, PasswordField } from '@/components/ui';
+import { firstError } from '@/lib/validation';
 
 export default function LoginScreen() {
   const { signIn } = useAuth();
@@ -16,13 +17,18 @@ export default function LoginScreen() {
   const [account, setAccount] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [showErrors, setShowErrors] = useState(false);
   const passwordRef = useRef<TextInput>(null);
 
+  const errors = {
+    account: accountError(mode, account),
+    password: password ? null : 'Enter your password.',
+  };
+
   const submit = async () => {
-    if (!account.trim() || !password) {
-      toast.error(mode === 'phone' ? 'Enter your mobile number and password.' : 'Enter your username and password.');
-      return;
-    }
+    setShowErrors(true);
+    const problem = firstError(errors);
+    if (problem) return toast.error(problem);
     setSubmitting(true);
     try {
       await signIn(toAccountIdentifier(mode, account), password);
@@ -47,6 +53,7 @@ export default function LoginScreen() {
             onModeChange={setMode}
             value={account}
             onChangeText={setAccount}
+            error={showErrors ? errors.account : null}
             returnKeyType="next"
             onSubmitEditing={() => passwordRef.current?.focus()}
           />
@@ -55,6 +62,7 @@ export default function LoginScreen() {
             label="Password"
             value={password}
             onChangeText={setPassword}
+            error={showErrors ? errors.password : null}
             autoComplete="password"
             textContentType="password"
             returnKeyType="go"

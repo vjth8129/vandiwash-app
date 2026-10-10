@@ -12,19 +12,20 @@ import {
   vehiclesApi,
   type Customer,
   type Vehicle,
-  type VehicleCategory,
 } from '@/api';
 import { useAuth } from '@/auth/AuthContext';
 import { colors, radius, space } from '@/components/theme';
-import { Button, Card, Chip, ErrorBanner, Loading, SectionTitle, Segmented, TextField } from '@/components/ui';
+import { Button, Card, Chip, ErrorBanner, Loading, SectionTitle, TextField } from '@/components/ui';
 import { BrandModelFields } from '@/components/BrandModelFields';
 import { toast } from '@/components/Toast';
 import { VehicleNumberInput } from '@/components/VehicleNumberInput';
 import { useDebounced, useQuery } from '@/hooks/useQuery';
+import { useVehicleCategories } from '@/hooks/useVehicleCategories';
 import { formatDuration, formatMoney, toDateString, toTimeString } from '@/lib/format';
-import { emptyPlate, isPlateComplete, plateString } from '@/lib/plates';
+import { emptyPlate, plateError, plateString } from '@/lib/plates';
 import { vehicleTypeFor, vehicleTypeLabel } from '@/lib/vehicleCatalog';
-import { rateFor, supportsTaxiRates, TAXI_NOTE } from '@/lib/pricing';
+import { rateFor } from '@/lib/pricing';
+import { maxLengthError, nameError, phoneError } from '@/lib/validation';
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const last10 = (s: string) => s.replace(/\D/g, '').slice(-10);
@@ -86,12 +87,27 @@ export default function NewWashScreen() {
       );
   }, [params.vehicleId]);
 
-  // --- 3. service & time ---
-  const [serviceId, setServiceId] = useState<string | undefined>(params.serviceId);
+  // --- 3. vehicle type (decides the rates): the car's saved type unless staff change it ---
+  const types = useVehicleCategories();
+  const carKey = chosenCar?.id ?? 'new';
+  const [typeChoice, setTypeChoice] = useState<{ carKey: string; id: string } | null>(null);
+  const savedTypeId =
+    chosenCar?.categoryId && types.categories.some((c) => c.id === chosenCar.categoryId) ? chosenCar.categoryId : undefined;
+  const pickedTypeId = typeChoice?.carKey === carKey ? typeChoice.id : undefined;
+  const categoryId = pickedTypeId ?? savedTypeId ?? types.defaultCategory?.id;
+  const category = types.categories.find((c) => c.id === categoryId);
+  const savedTypeName = types.categories.find((c) => c.id === savedTypeId)?.name;
+
+  // --- 4. services (one or more) & time ---
+  const [serviceIds, setServiceIds] = useState<string[]>(() => (params.serviceId ? [params.serviceId] : []));
   const services = useQuery(() => servicesApi.list({ status: 'ACTIVE', limit: 100 }).then((r) => r.items));
-  const service = services.data?.find((x) => x.id === serviceId);
-  const [category, setCategory] = useState<VehicleCategory>('PRIVATE');
-  const taxiSupported = supportsTaxiRates(services.data);
+  const chosen = serviceIds.flatMap((id) => services.data?.find((x) => x.id === id) ?? []);
+  const lines = chosen.map((x) => ({ id: x.id, name: x.name, price: Number(rateFor(x, categoryId)) }));
+  const total = lines.reduce((sum, l) => sum + l.price, 0);
+  const minutes = chosen.reduce((sum, x) => sum + x.durationMinutes, 0);
+  const toggleService = (id: string) =>
+    setServiceIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+  const money = (n: number | string) => formatMoney(n, config?.currency);
 
   const [schedule, setSchedule] = useState(false);
   const [day, setDay] = useState<'today' | 'tomorrow'>('today');
@@ -106,14 +122,27 @@ export default function NewWashScreen() {
 
   const canAddNew = can('CUSTOMERS_CREATE') && can('VEHICLES_CREATE');
 
+  const [showErrors, setShowErrors] = useState(false);
+  const errors = {
+    phone: phoneError(phone, 'customer’s mobile number'),
+    name: !customer ? nameError(name, 'customer’s name') : null,
+    plate: addingCar ? plateError(plate) : null,
+    notes: maxLengthError(notes, 500, 'notes'),
+  };
+  const shown = (key: keyof typeof errors) => (showErrors ? errors[key] : null);
+
   const submit = async () => {
+    setShowErrors(true);
+    if (errors.phone) return toast.error(errors.phone);
     if (!phoneReady) return toast.error('Enter the customer’s 10-digit mobile number.');
     if (!settled) return toast.error('Looking up the customer… try again in a moment.');
-    if (!customer && !name.trim()) return toast.error('Enter the customer’s name.');
+    if (errors.name) return toast.error(errors.name);
     if (!chosenCar && !addingCar) return toast.error('Choose which car is here.');
-    if (addingCar && !isPlateComplete(plate)) return toast.error('Enter the full vehicle number, e.g. KL 07 AB 1234.');
-    if (!serviceId) return toast.error('Choose a service.');
+    if (errors.plate) return toast.error(errors.plate);
+    if (!categoryId) return toast.error('Choose the vehicle type.');
+    if (!chosen.length) return toast.error('Choose at least one service.');
     if (schedule && !TIME_RE.test(time)) return toast.error('Enter the time as HH:MM, e.g. 14:30.');
+    if (schedule && errors.notes) return toast.error(errors.notes);
 
     const now = new Date();
     const date = new Date(now);
@@ -142,6 +171,7 @@ export default function NewWashScreen() {
           brand: brand.trim() || undefined,
           model: model.trim() || undefined,
           vehicleType: vehicleTypeFor(brand, model),
+          categoryId,
         });
         remember({ vehicle: car });
       }
@@ -152,13 +182,12 @@ export default function NewWashScreen() {
         const booking = await bookingsApi.create({
           customerId: owner.id,
           vehicleId: car.id,
-          serviceId,
+          serviceIds: chosen.map((x) => x.id),
           bookingDate: toDateString(date),
           startTime: schedule ? time : toTimeString(now),
-          // Until the server stores the category, taxis are flagged in the notes instead.
-          ...(taxiSupported
-            ? { vehicleCategory: category, notes: notes.trim() || undefined }
-            : { notes: [category === 'TAXI' ? TAXI_NOTE : '', notes.trim()].filter(Boolean).join(' — ') || undefined }),
+          // Also saved on the car, so its next wash starts with this type.
+          vehicleCategoryId: categoryId,
+          notes: notes.trim() || undefined,
         });
         bookingId = booking.id;
         remember({ bookingId });
@@ -180,16 +209,17 @@ export default function NewWashScreen() {
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
-      <ScrollView contentContainerStyle={{ padding: space.lg, paddingBottom: 48 }} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={{ padding: space.lg, paddingBottom: space.xl }} keyboardShouldPersistTaps="handled">
         {/* 1 · Customer */}
         <SectionTitle>Customer</SectionTitle>
         <TextField
           label="Mobile number"
           value={phone}
-          onChangeText={setPhone}
+          onChangeText={(t) => setPhone(t.replace(/[^\d+\s-]/g, ''))}
           keyboardType="phone-pad"
           placeholder="10-digit mobile number"
           maxLength={16}
+          error={shown('phone')}
           autoFocus={!params.vehicleId}
         />
         {phoneReady && !settled && <Text style={s.hint}>Looking up customer…</Text>}
@@ -211,7 +241,15 @@ export default function NewWashScreen() {
                 <Ionicons name="sparkles-outline" size={16} color={colors.primaryDark} />
                 <Text style={s.newBannerText}>New customer</Text>
               </View>
-              <TextField label="Customer name" value={name} onChangeText={setName} autoCapitalize="words" placeholder="Full name" />
+              <TextField
+                label="Customer name"
+                value={name}
+                onChangeText={setName}
+                autoCapitalize="words"
+                placeholder="Full name"
+                maxLength={150}
+                error={shown('name')}
+              />
             </>
           ) : (
             <ErrorBanner message="No customer with this number, and your role can't add new customers." />
@@ -238,6 +276,9 @@ export default function NewWashScreen() {
                         <Text style={s.sub}>
                           {[c.brand, c.model].filter(Boolean).join(' ') || 'Car'}
                           {c.vehicleType ? ` · ${vehicleTypeLabel(c.vehicleType)}` : ''}
+                          {types.categories.find((t) => t.id === c.categoryId)
+                            ? ` · ${types.categories.find((t) => t.id === c.categoryId)!.name}`
+                            : ''}
                         </Text>
                       </View>
                     </Card>
@@ -254,7 +295,7 @@ export default function NewWashScreen() {
 
             {addingCar && (
               <View>
-                <VehicleNumberInput label="Vehicle number" value={plate} onChange={setPlate} />
+                <VehicleNumberInput label="Vehicle number" value={plate} onChange={setPlate} error={shown('plate')} />
                 <BrandModelFields
                   brand={brand}
                   model={model}
@@ -268,41 +309,58 @@ export default function NewWashScreen() {
           </View>
         )}
 
-        {/* 3 · Private or taxi — decides the rate */}
+        {/* 3 · Vehicle type — decides the rate */}
         <View style={{ marginTop: space.xl }}>
-          <SectionTitle>Vehicle use</SectionTitle>
-          <Segmented
-            value={category}
-            onChange={setCategory}
-            options={[
-              ['PRIVATE', 'Private'],
-              ['TAXI', 'Taxi'],
-            ]}
-          />
-          {category === 'TAXI' && !taxiSupported && (
-            <Text style={[s.hint, { marginTop: -space.sm }]}>
-              Taxi rates aren’t set up on the server yet — the regular rate applies.
+          <SectionTitle>Vehicle type</SectionTitle>
+          {types.loading ? (
+            <Loading />
+          ) : (
+            <View style={[s.wrap, { marginBottom: space.sm }]}>
+              {types.categories.map((c) => (
+                <Chip
+                  key={c.id}
+                  label={c.name}
+                  selected={c.id === categoryId}
+                  onPress={() => setTypeChoice({ carKey, id: c.id })}
+                />
+              ))}
+            </View>
+          )}
+          {savedTypeName && (
+            <Text style={s.hint}>
+              {categoryId === savedTypeId
+                ? `Saved as ${savedTypeName} for this car.`
+                : `This car was ${savedTypeName} — it’ll be saved as ${category?.name ?? 'the new type'}.`}
             </Text>
           )}
         </View>
 
-        {/* 4 · Service */}
+        {/* 4 · Services — one or more */}
         <View style={{ marginTop: space.md }}>
-          <SectionTitle>Service</SectionTitle>
+          <SectionTitle>Services</SectionTitle>
+          <Text style={[s.hint, { marginTop: -4 }]}>Tap to add or remove. You can choose more than one.</Text>
           {services.loading ? (
             <Loading />
           ) : (
             <View style={s.serviceGrid}>
               {(services.data ?? []).map((x) => {
-                const selected = x.id === serviceId;
+                const selected = serviceIds.includes(x.id);
                 return (
-                  <Card key={x.id} onPress={() => setServiceId(x.id)} style={[s.serviceTile, selected && s.serviceSelected]}>
-                    <Text style={[s.serviceName, selected && { color: '#fff' }]} numberOfLines={2}>
-                      {x.name}
-                    </Text>
-                    <Text style={[s.servicePrice, selected && { color: '#fff' }]}>
-                      {formatMoney(rateFor(x, category), config?.currency)}
-                    </Text>
+                  <Card
+                    key={x.id}
+                    onPress={() => toggleService(x.id)}
+                    style={[s.serviceTile, selected && s.serviceSelected]}>
+                    <View style={s.tileHead}>
+                      <Text style={[s.serviceName, selected && { color: '#fff' }]} numberOfLines={2}>
+                        {x.name}
+                      </Text>
+                      <Ionicons
+                        name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+                        size={20}
+                        color={selected ? '#fff' : colors.border}
+                      />
+                    </View>
+                    <Text style={[s.servicePrice, selected && { color: '#fff' }]}>{money(rateFor(x, categoryId))}</Text>
                     <Text style={[s.sub, selected && { color: '#DCE8FF' }]}>{formatDuration(x.durationMinutes)}</Text>
                   </Card>
                 );
@@ -336,7 +394,14 @@ export default function NewWashScreen() {
                 maxLength={5}
                 error={time && !TIME_RE.test(time) ? 'Use HH:MM, e.g. 09:15' : null}
               />
-              <TextField label="Notes" value={notes} onChangeText={setNotes} placeholder="Optional" />
+              <TextField
+                label="Notes"
+                value={notes}
+                onChangeText={setNotes}
+                placeholder="Optional"
+                maxLength={500}
+                error={shown('notes')}
+              />
               <View style={s.switchRow}>
                 <Text style={[s.name, { flex: 1, fontSize: 15 }]}>Car is here — add to queue now</Text>
                 <Switch value={willCheckIn} onValueChange={setCheckInNow} disabled={day === 'tomorrow'} trackColor={{ true: colors.primary }} />
@@ -345,19 +410,42 @@ export default function NewWashScreen() {
           )}
         </View>
 
+      </ScrollView>
+
+      {/* Confirmation: what's being charged, then the action */}
+      <View style={s.footer}>
+        {lines.length > 0 && (
+          <View style={{ marginBottom: space.sm }}>
+            {lines.map((l) => (
+              <View key={l.id} style={s.lineRow}>
+                <Text style={s.lineName} numberOfLines={1}>
+                  {l.name}
+                </Text>
+                <Text style={s.linePrice}>{money(l.price)}</Text>
+              </View>
+            ))}
+            <View style={[s.lineRow, s.totalRow]}>
+              <Text style={s.totalLabel}>
+                Total{category ? ` · ${category.name}` : ''} · {formatDuration(minutes)}
+              </Text>
+              <Text style={s.totalValue}>{money(total)}</Text>
+            </View>
+          </View>
+        )}
         <Button
           title={
             step ??
-            (willCheckIn
-              ? `Start wash${service ? ` · ${formatMoney(rateFor(service, category), config?.currency)}` : ''}`
-              : 'Create booking')
+            (lines.length
+              ? `${willCheckIn ? 'Start wash' : 'Create booking'} · ${money(total)}`
+              : willCheckIn
+                ? 'Start wash'
+                : 'Create booking')
           }
           icon={willCheckIn ? 'water' : 'calendar'}
           onPress={submit}
-          disabled={step !== null || !settled || !serviceId}
-          style={{ marginTop: space.xl }}
+          disabled={step !== null || !settled || !chosen.length}
         />
-      </ScrollView>
+      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -383,7 +471,22 @@ const s = StyleSheet.create({
   serviceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   serviceTile: { width: '48.5%', padding: space.md, minHeight: 96 },
   serviceSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
-  serviceName: { fontSize: 15, fontWeight: '700', color: colors.text },
+  serviceName: { flex: 1, fontSize: 15, fontWeight: '700', color: colors.text },
+  tileHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 4 },
+  footer: {
+    backgroundColor: colors.card,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    paddingHorizontal: space.lg,
+    paddingTop: space.md,
+    paddingBottom: space.md,
+  },
+  lineRow: { flexDirection: 'row', justifyContent: 'space-between', gap: space.sm, paddingVertical: 2 },
+  lineName: { flex: 1, fontSize: 14, color: colors.text },
+  linePrice: { fontSize: 14, fontWeight: '600', color: colors.text },
+  totalRow: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, marginTop: 4, paddingTop: 6 },
+  totalLabel: { flex: 1, fontSize: 15, fontWeight: '800', color: colors.text },
+  totalValue: { fontSize: 18, fontWeight: '800', color: colors.text },
   servicePrice: { fontSize: 17, fontWeight: '800', color: colors.text, marginTop: 4 },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   reg: { fontSize: 17, fontWeight: '800', color: colors.text, letterSpacing: 0.5 },

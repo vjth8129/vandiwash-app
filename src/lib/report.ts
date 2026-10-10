@@ -1,6 +1,6 @@
 import { ordersApi, type Order } from '@/api';
 import { toDateString } from './format';
-import { bookingAmount, isTaxiBooking } from './pricing';
+import { bookingAmount, bookingCategory, bookingItems } from './pricing';
 
 // The API only has an all-time revenue total (/reports/summary), so the finance report is built
 // here from completed jobs: fetched newest first, then filtered and summed on the device.
@@ -66,13 +66,21 @@ export async function fetchCompletedSince(from: string): Promise<CompletedFetch>
 
 export const completedDay = (o: Order) => toDateString(new Date(o.completedAt ?? o.updatedAt));
 
-/** What the job was charged: the order's total if recorded, else the booking's rate. */
+/** What the job was charged: the order's total if recorded, else the booking's total. */
 export const orderAmount = (o: Order) => {
   const n = Number(o.totalAmount ?? (o.booking ? bookingAmount(o.booking) : 0) ?? 0);
   return Number.isFinite(n) ? n : 0;
 };
 
-export const isTaxiOrder = (o: Order) => !!o.booking && isTaxiBooking(o.booking);
+/** The services in a job with the price charged for each. */
+export const orderLines = (o: Order) => (o.booking ? bookingItems(o.booking) : []);
+
+export const orderCategory = (o: Order) => (o.booking ? bookingCategory(o.booking) : null);
+export const categoryKey = (c: { id: string; code: string }) => c.id || c.code;
+
+export const PAYMENT_LABEL = { UPI: 'UPI', CASH: 'Cash', NONE: 'Not paid' } as const;
+export type PaymentKey = keyof typeof PAYMENT_LABEL;
+export const paymentKey = (o: Order): PaymentKey => (o.paidAt ? (o.paymentMethod === 'CASH' ? 'CASH' : 'UPI') : 'NONE');
 
 export type Breakdown = { key: string; label: string; count: number; revenue: number };
 
@@ -81,24 +89,36 @@ export type Report = {
   revenue: number;
   count: number;
   average: number;
-  taxiRevenue: number;
-  taxiCount: number;
+  /** Revenue split by service (a job with two services counts toward both). */
   byService: Breakdown[];
+  /** Split by vehicle type (Private, Taxi, ...). */
+  byCategory: Breakdown[];
+  /** Split by how it was paid: UPI, cash, or not recorded yet. */
+  byPayment: Breakdown[];
   byDay: Breakdown[];
 };
 
-export type ReportFilters = { range: DateRange; serviceId: string | null; use: 'ALL' | 'PRIVATE' | 'TAXI' };
+export type ReportFilters = { range: DateRange; serviceId: string | null; categoryKey: string | null };
 
-export function buildReport(all: Order[], { range, serviceId, use }: ReportFilters): Report {
+export function buildReport(all: Order[], { range, serviceId, categoryKey: catKey }: ReportFilters): Report {
   const orders = all
     .filter((o) => {
       const day = completedDay(o);
       if (day < range.from || day > range.to) return false;
-      if (serviceId && o.booking?.serviceId !== serviceId) return false;
-      if (use !== 'ALL' && isTaxiOrder(o) !== (use === 'TAXI')) return false;
+      if (serviceId && !orderLines(o).some((l) => l.serviceId === serviceId)) return false;
+      const c = orderCategory(o);
+      if (catKey && (!c || categoryKey(c) !== catKey)) return false;
       return true;
     })
     .sort((a, b) => (b.completedAt ?? '').localeCompare(a.completedAt ?? ''));
+
+  // With a service filter, a job only counts the part of its bill for that service.
+  const value = (o: Order) =>
+    serviceId
+      ? orderLines(o)
+          .filter((l) => l.serviceId === serviceId)
+          .reduce((sum, l) => sum + Number(l.price), 0)
+      : orderAmount(o);
 
   const group = (keyOf: (o: Order) => string, labelOf: (o: Order) => string) => {
     const map = new Map<string, Breakdown>();
@@ -106,27 +126,39 @@ export function buildReport(all: Order[], { range, serviceId, use }: ReportFilte
       const key = keyOf(o);
       const row = map.get(key) ?? { key, label: labelOf(o), count: 0, revenue: 0 };
       row.count += 1;
-      row.revenue += orderAmount(o);
+      row.revenue += value(o);
       map.set(key, row);
     }
     return [...map.values()];
   };
 
-  const revenue = orders.reduce((sum, o) => sum + orderAmount(o), 0);
-  const taxi = orders.filter(isTaxiOrder);
-  const taxiRevenue = taxi.reduce((sum, o) => sum + orderAmount(o), 0);
+  const services = new Map<string, Breakdown>();
+  for (const o of orders) {
+    for (const l of orderLines(o)) {
+      if (serviceId && l.serviceId !== serviceId) continue;
+      const row = services.get(l.serviceId) ?? { key: l.serviceId, label: l.name, count: 0, revenue: 0 };
+      row.count += 1;
+      row.revenue += Number(l.price) || 0;
+      services.set(l.serviceId, row);
+    }
+  }
+
+  const revenue = orders.reduce((sum, o) => sum + value(o), 0);
 
   return {
     orders,
     revenue,
     count: orders.length,
     average: orders.length ? revenue / orders.length : 0,
-    taxiRevenue,
-    taxiCount: taxi.length,
-    byService: group(
-      (o) => o.booking?.serviceId ?? '?',
-      (o) => o.booking?.service?.name ?? 'Service',
+    byService: [...services.values()].sort((a, b) => b.revenue - a.revenue),
+    byCategory: group(
+      (o) => {
+        const c = orderCategory(o);
+        return c ? categoryKey(c) : '?';
+      },
+      (o) => orderCategory(o)?.name ?? 'Vehicle',
     ).sort((a, b) => b.revenue - a.revenue),
+    byPayment: group(paymentKey, (o) => PAYMENT_LABEL[paymentKey(o)]).sort((a, b) => b.revenue - a.revenue),
     byDay: group(completedDay, completedDay).sort((a, b) => b.key.localeCompare(a.key)),
   };
 }

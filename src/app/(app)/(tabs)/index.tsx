@@ -5,11 +5,12 @@ import { FlatList, RefreshControl, ScrollView, StyleSheet, Text, View } from 're
 import { bookingsApi, errorMessage, ordersApi, type Booking, type Order, type OrderStatus } from '@/api';
 import { useAuth } from '@/auth/AuthContext';
 import { OrderCard } from '@/components/OrderCard';
+import { PaymentSheet } from '@/components/PaymentSheet';
 import { colors, space } from '@/components/theme';
 import { Badge, Button, Card, Chip, EmptyState, Fab, Loading, Segmented } from '@/components/ui';
 import { useQuery } from '@/hooks/useQuery';
 import { notify } from '@/lib/confirm';
-import { bookingAmount } from '@/lib/pricing';
+import { bookingAmount, serviceNames } from '@/lib/pricing';
 import {
   BOOKING_STATUS,
   formatClock,
@@ -21,6 +22,7 @@ import {
 } from '@/lib/format';
 
 type Tab = 'active' | 'bookings' | 'done';
+type DoneFilter = 'ALL' | 'UNPAID' | 'PAID';
 const ACTIVE_FILTERS: (OrderStatus | 'ALL')[] = ['ALL', 'CREATED', 'WASHING', 'READY'];
 
 export default function JobsScreen() {
@@ -29,6 +31,8 @@ export default function JobsScreen() {
   const [tab, setTab] = useState<Tab>('active');
   const [filter, setFilter] = useState<OrderStatus | 'ALL'>('ALL');
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [paying, setPaying] = useState<Order | null>(null);
+  const [doneFilter, setDoneFilter] = useState<DoneFilter>('ALL');
 
   const { data, loading, refreshing, refresh, reload } = useQuery(async () => {
     const [orders, bookings] = await Promise.all([
@@ -37,6 +41,11 @@ export default function JobsScreen() {
     ]);
     return { orders: orders.items, bookings: bookings.items };
   });
+
+  // Completed jobs nobody marked as paid (e.g. staff forgot) — fetched separately so older ones show too.
+  const unpaid = useQuery(() => ordersApi.list({ status: 'COMPLETED', paymentStatus: 'UNPAID', limit: 100 }));
+  const unpaidCount = unpaid.data?.pagination?.total ?? unpaid.data?.items.length ?? 0;
+  const reloadAll = () => Promise.all([reload(), unpaid.reload()]);
 
   const { active, done, awaiting, counts } = useMemo(() => {
     const orders = data?.orders ?? [];
@@ -61,8 +70,12 @@ export default function JobsScreen() {
     if (!step) return;
     setBusyId(order.id);
     try {
-      await ordersApi.setStatus(order.id, step.status);
-      await reload();
+      const updated = await ordersApi.setStatus(order.id, step.status);
+      // Handing the car over: show the QR so the customer can pay right away.
+      if (step.status === 'COMPLETED' && !updated.paidAt) {
+        setPaying({ ...order, ...updated, booking: updated.booking ?? order.booking });
+      }
+      await reloadAll();
     } catch (e) {
       notify('Could not update job', errorMessage(e));
     } finally {
@@ -84,7 +97,14 @@ export default function JobsScreen() {
   };
 
   const canUpdate = can('ORDERS_UPDATE');
-  const orders = tab === 'active' ? active.filter((o) => filter === 'ALL' || o.status === filter) : done;
+  const orders =
+    tab === 'active'
+      ? active.filter((o) => filter === 'ALL' || o.status === filter)
+      : doneFilter === 'UNPAID'
+        ? (unpaid.data?.items ?? [])
+        : doneFilter === 'PAID'
+          ? done.filter((o) => o.paidAt)
+          : done;
 
   const header = (
     <View>
@@ -94,9 +114,21 @@ export default function JobsScreen() {
         options={[
           ['active', `Active (${active.length})`],
           ['bookings', `Booked (${awaiting.length})`],
-          ['done', 'Done'],
+          ['done', unpaidCount ? `Done · ${unpaidCount} unpaid` : 'Done'],
         ]}
       />
+      {tab === 'done' && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>
+          <Chip label="All" selected={doneFilter === 'ALL'} onPress={() => setDoneFilter('ALL')} />
+          <Chip
+            label="Not paid"
+            count={unpaidCount}
+            selected={doneFilter === 'UNPAID'}
+            onPress={() => setDoneFilter('UNPAID')}
+          />
+          <Chip label="Paid" selected={doneFilter === 'PAID'} onPress={() => setDoneFilter('PAID')} />
+        </ScrollView>
+      )}
       {tab === 'active' && (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>
           {ACTIVE_FILTERS.map((f) => (
@@ -115,7 +147,15 @@ export default function JobsScreen() {
 
   if (loading) return <Loading />;
 
-  const refreshControl = <RefreshControl refreshing={refreshing} onRefresh={refresh} />;
+  const refreshControl = (
+    <RefreshControl
+      refreshing={refreshing}
+      onRefresh={() => {
+        refresh();
+        unpaid.refresh();
+      }}
+    />
+  );
 
   return (
     <View style={{ flex: 1 }}>
@@ -140,7 +180,7 @@ export default function JobsScreen() {
               </View>
               <View style={[s.rowBetween, { marginTop: space.md }]}>
                 <Text style={s.text}>
-                  {b.service?.name} · {formatDay(b.bookingDate)} {formatClock(b.startTime)}
+                  {serviceNames(b)} · {formatDay(b.bookingDate)} {formatClock(b.startTime)}
                 </Text>
                 {bookingAmount(b) !== undefined && <Text style={s.price}>{formatMoney(bookingAmount(b), currency)}</Text>}
               </View>
@@ -166,6 +206,8 @@ export default function JobsScreen() {
           ListEmptyComponent={
             tab === 'active' ? (
               <EmptyState icon="water-outline" title="No active jobs" message="Tap “New wash” to add a car to a service." />
+            ) : doneFilter === 'UNPAID' ? (
+              <EmptyState icon="checkmark-circle-outline" title="All paid" message="Every completed wash has a payment noted." />
             ) : (
               <EmptyState icon="checkmark-done-outline" title="Nothing completed yet" />
             )
@@ -180,7 +222,9 @@ export default function JobsScreen() {
                 nextAction={
                   canUpdate && step
                     ? { label: step.action, onPress: () => advance(item), loading: busyId === item.id }
-                    : undefined
+                    : canUpdate && item.status === 'COMPLETED' && !item.paidAt
+                      ? { label: 'Collect payment', onPress: () => setPaying(item) }
+                      : undefined
                 }
               />
             );
@@ -190,6 +234,15 @@ export default function JobsScreen() {
       {can('BOOKINGS_CREATE') && can('ORDERS_CREATE') && (
         <Fab icon="add" label="New wash" onPress={() => router.push('/wash/new')} />
       )}
+      <PaymentSheet
+        order={paying}
+        currency={currency}
+        onClose={() => setPaying(null)}
+        onPaid={() => {
+          setPaying(null);
+          reloadAll();
+        }}
+      />
     </View>
   );
 }

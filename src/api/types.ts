@@ -78,20 +78,31 @@ export type Service = {
   id: string;
   name: string;
   description: string | null;
-  /** Rate for private vehicles (the default rate). */
+  /** Base rate: charged for every vehicle type that has no rate of its own (e.g. Private). */
   price: string | number;
-  /**
-   * Rate for taxis. Requires the backend change in docs/backend-taxi-rates.md —
-   * absent from responses until then; null means "same as price".
-   */
+  /** Legacy mirror of the Taxi rate (older app builds); use `rates`. */
   taxiPrice?: string | number | null;
+  /** Rate per vehicle type; types not listed are charged `price`. */
+  rates?: ServiceRate[];
   durationMinutes: number;
   status: ServiceStatus;
   sortOrder?: number;
 };
 
-export const VEHICLE_CATEGORIES = ['PRIVATE', 'TAXI'] as const;
-export type VehicleCategory = (typeof VEHICLE_CATEGORIES)[number];
+export type ServiceRate = { categoryId: string; price: string | number };
+
+/** How a vehicle is used (Private, Taxi, ...) — decides the rate. Managed in the admin portal. */
+export type VehicleCategory = {
+  id: string;
+  /** Stable key, e.g. PRIVATE / TAXI. PRIVATE is the default. */
+  code: string;
+  name: string;
+  description: string | null;
+  status: 'ACTIVE' | 'INACTIVE';
+  sortOrder: number;
+};
+
+export const DEFAULT_CATEGORY_CODE = 'PRIVATE';
 
 export type Customer = {
   id: string;
@@ -123,6 +134,8 @@ export type Vehicle = {
   color: string | null;
   year: number | null;
   vehicleType: VehicleType | null;
+  /** The vehicle type it was last washed as; pre-selected on the next wash. */
+  categoryId?: string | null;
   customer?: Pick<Customer, 'id' | 'name' | 'phone'>;
 };
 
@@ -144,13 +157,25 @@ export type Booking = {
   endTime: string;
   status: BookingStatus;
   notes: string | null;
-  /** Private or taxi (backend change pending — see docs/backend-taxi-rates.md). */
-  vehicleCategory?: VehicleCategory | null;
-  /** Amount charged for this booking, if the backend records it. */
+  /** Legacy PRIVATE/TAXI flag; `category` is the source of truth. */
+  vehicleCategory?: 'PRIVATE' | 'TAXI' | null;
+  categoryId?: string | null;
+  category?: Pick<VehicleCategory, 'id' | 'code' | 'name'> | null;
+  /** Total charged: the sum of `items`. */
   price?: string | number | null;
+  /** The services in this wash, with the price charged for each. */
+  items?: BookingItem[];
   customer?: Pick<Customer, 'id' | 'name' | 'phone'>;
   vehicle?: Pick<Vehicle, 'id' | 'registrationNumber'>;
   service?: { id: string; name: string; price: number | string; taxiPrice?: number | string | null; durationMinutes?: number };
+};
+
+export type BookingItem = {
+  id: string;
+  serviceId: string;
+  name: string;
+  price: string | number;
+  durationMinutes: number;
 };
 
 /** CREATED is shown as "Waiting". */
@@ -172,10 +197,15 @@ export type Order = {
   completedAt: string | null;
   cancelledAt: string | null;
   totalAmount: string | number | null;
+  /** When staff noted the customer paid. */
+  paidAt?: string | null;
+  paymentMethod?: PaymentMethod | null;
   createdAt: string;
   updatedAt: string;
   booking?: Booking;
 };
+
+export type PaymentMethod = 'UPI' | 'CASH';
 
 export type Permission = {
   id: string;

@@ -5,6 +5,8 @@ import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native
 
 import { errorMessage, ordersApi, type Order, type OrderStatus } from '@/api';
 import { useAuth } from '@/auth/AuthContext';
+import { PAID_BADGE, UNPAID_BADGE } from '@/components/OrderCard';
+import { PaymentSheet } from '@/components/PaymentSheet';
 import { colors, space } from '@/components/theme';
 import { Badge, Button, Card, EmptyState, Loading, Row, SectionTitle } from '@/components/ui';
 import { useQuery } from '@/hooks/useQuery';
@@ -19,7 +21,7 @@ import {
   ORDER_FLOW,
   ORDER_STATUS,
 } from '@/lib/format';
-import { bookingAmount, isTaxiBooking } from '@/lib/pricing';
+import { bookingAmount, bookingCategory, bookingItems, serviceNames } from '@/lib/pricing';
 
 const STEP_TIME: Partial<Record<OrderStatus, keyof Order>> = {
   CREATED: 'createdAt',
@@ -31,7 +33,8 @@ const STEP_TIME: Partial<Record<OrderStatus, keyof Order>> = {
 export default function OrderDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { can, config } = useAuth();
-  const [busy, setBusy] = useState<'advance' | 'cancel' | null>(null);
+  const [busy, setBusy] = useState<'advance' | 'cancel' | 'unpay' | null>(null);
+  const [paying, setPaying] = useState<Order | null>(null);
 
   const { data: order, error, loading, refreshing, refresh, setData } = useQuery(() => ordersApi.get(id), [id]);
 
@@ -41,7 +44,10 @@ export default function OrderDetailScreen() {
     try {
       const updated = await ordersApi.setStatus(order.id, status);
       // Keep the booking details we already have if the PATCH response omits them.
-      setData({ ...order, ...updated, booking: updated.booking ?? order.booking });
+      const next = { ...order, ...updated, booking: updated.booking ?? order.booking };
+      setData(next);
+      // Handing the car over: show the QR so the customer can pay right away.
+      if (status === 'COMPLETED' && !next.paidAt) setPaying(next);
     } catch (e) {
       notify('Could not update job', errorMessage(e));
     } finally {
@@ -61,6 +67,22 @@ export default function OrderDetailScreen() {
   }
 
   const b = order.booking;
+  const items = b ? bookingItems(b) : [];
+  const total = order.totalAmount ?? (b ? bookingAmount(b) : undefined);
+  const money = (v: string | number | null | undefined) => formatMoney(v, config?.currency);
+
+  const undoPayment = async () => {
+    if (!(await confirm('Undo payment?', 'The job will show as not paid.', 'Undo', true))) return;
+    setBusy('unpay');
+    try {
+      const updated = await ordersApi.recordPayment(order.id, null);
+      setData({ ...order, ...updated, booking: updated.booking ?? order.booking });
+    } catch (e) {
+      notify('Could not update payment', errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
   const next = NEXT_STEP[order.status];
   const canUpdate = can('ORDERS_UPDATE');
   const currentIndex = ORDER_FLOW.indexOf(order.status);
@@ -79,7 +101,7 @@ export default function OrderDetailScreen() {
         <View style={s.headerRow}>
           <View style={{ flex: 1 }}>
             <Text style={s.reg}>{b?.vehicle?.registrationNumber ?? 'Vehicle'}</Text>
-            <Text style={s.muted}>{b?.service?.name}</Text>
+            <Text style={s.muted}>{b ? serviceNames(b) : ''}</Text>
           </View>
           <Badge {...ORDER_STATUS[order.status]} />
         </View>
@@ -98,6 +120,14 @@ export default function OrderDetailScreen() {
             <Ionicons name="checkmark-circle" size={20} color={colors.success} />
             <Text style={{ color: colors.success, fontWeight: '700' }}>Car handed over</Text>
           </View>
+        )}
+        {order.status === 'COMPLETED' && !order.paidAt && canUpdate && (
+          <Button
+            title="Collect payment"
+            icon="qr-code-outline"
+            onPress={() => setPaying(order)}
+            style={{ marginTop: space.md }}
+          />
         )}
       </Card>
 
@@ -135,15 +165,57 @@ export default function OrderDetailScreen() {
         <Row icon="person-outline" label="Customer" value={b?.customer?.name} />
         <Row icon="call-outline" label="Phone" value={b?.customer?.phone} />
         <Row icon="car-outline" label="Car" value={b?.vehicle?.registrationNumber} />
-        <Row icon="water-outline" label="Service" value={b?.service?.name} />
-        <Row icon="car-sport-outline" label="Vehicle use" value={b ? (isTaxiBooking(b) ? 'Taxi' : 'Private') : undefined} />
-        <Row icon="cash-outline" label="Price" value={b && bookingAmount(b) !== undefined ? formatMoney(bookingAmount(b), config?.currency) : undefined} />
+        <Row icon="car-sport-outline" label="Vehicle type" value={b ? bookingCategory(b).name : undefined} />
         <Row
           icon="calendar-outline"
           label="Slot"
           value={b ? `${formatDay(b.bookingDate)}, ${formatClock(b.startTime)}–${formatClock(b.endTime)}` : undefined}
         />
         {!!b?.notes && <Row icon="document-text-outline" label="Notes" value={b.notes} />}
+      </Card>
+
+      <SectionTitle>Services</SectionTitle>
+      <Card style={{ marginBottom: space.lg }}>
+        {items.map((item) => (
+          <View key={item.id} style={s.itemRow}>
+            <Text style={s.lineName}>{item.name}</Text>
+            <Text style={s.linePrice}>{money(item.price)}</Text>
+          </View>
+        ))}
+        <View style={[s.itemRow, s.totalLine]}>
+          <Text style={s.totalLabel}>Total</Text>
+          <Text style={s.totalValue}>{total !== undefined ? money(total) : '—'}</Text>
+        </View>
+        <View style={[s.itemRow, { marginTop: space.sm }]}>
+          <Text style={s.muted}>
+            {order.paidAt
+              ? `Paid by ${order.paymentMethod === 'CASH' ? 'cash' : 'UPI'} · ${formatTimestamp(order.paidAt)}`
+              : order.status === 'CANCELLED'
+                ? 'Cancelled — nothing to pay'
+                : 'Not paid yet'}
+          </Text>
+          {order.status !== 'CANCELLED' && <Badge {...(order.paidAt ? PAID_BADGE : UNPAID_BADGE)} />}
+        </View>
+        {canUpdate && order.status !== 'CANCELLED' && (
+          order.paidAt ? (
+            <Button
+              title="Undo payment"
+              variant="ghost"
+              onPress={undoPayment}
+              loading={busy === 'unpay'}
+              disabled={busy !== null}
+              style={{ marginTop: space.sm }}
+            />
+          ) : order.status !== 'COMPLETED' ? (
+            <Button
+              title="Customer paid already"
+              variant="ghost"
+              icon="cash-outline"
+              onPress={() => setPaying(order)}
+              style={{ marginTop: space.sm }}
+            />
+          ) : null
+        )}
       </Card>
 
       {canUpdate && isActiveOrder(order.status) && (
@@ -156,6 +228,16 @@ export default function OrderDetailScreen() {
           disabled={busy !== null}
         />
       )}
+
+      <PaymentSheet
+        order={paying}
+        currency={config?.currency}
+        onClose={() => setPaying(null)}
+        onPaid={(paid) => {
+          setData(paid);
+          setPaying(null);
+        }}
+      />
     </ScrollView>
   );
 }
@@ -174,6 +256,12 @@ const s = StyleSheet.create({
     borderRadius: 10,
   },
   step: { flexDirection: 'row', gap: space.md },
+  itemRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: space.sm, paddingVertical: 6 },
+  lineName: { flex: 1, fontSize: 15, color: colors.text },
+  linePrice: { fontSize: 15, fontWeight: '600', color: colors.text },
+  totalLine: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, marginTop: 4, paddingTop: space.sm },
+  totalLabel: { flex: 1, fontSize: 16, fontWeight: '800', color: colors.text },
+  totalValue: { fontSize: 18, fontWeight: '800', color: colors.text },
   stepRail: { alignItems: 'center', width: 22 },
   dot: {
     width: 22,

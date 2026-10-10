@@ -8,8 +8,9 @@ import { useAuth } from '@/auth/AuthContext';
 import { colors, space } from '@/components/theme';
 import { Card, EmptyState, Fab, Loading, SearchBar, Segmented } from '@/components/ui';
 import { useDebounced, useQuery } from '@/hooks/useQuery';
+import { useVehicleCategories } from '@/hooks/useVehicleCategories';
 import { formatDuration, formatMoney } from '@/lib/format';
-import { hasDifferentTaxiRate, rateFor } from '@/lib/pricing';
+import { hasOwnRate, isDefaultCategory, rateFor } from '@/lib/pricing';
 
 export default function ServicesScreen() {
   const { config, can } = useAuth();
@@ -23,6 +24,7 @@ export default function ServicesScreen() {
   );
 
   const currency = config?.currency;
+  const { categories } = useVehicleCategories();
 
   return (
     <View style={{ flex: 1 }}>
@@ -69,16 +71,19 @@ export default function ServicesScreen() {
               <Ionicons name="chevron-forward" size={20} color={colors.muted} />
             </View>
             <View style={s.rates}>
-              <View style={s.rate}>
-                <Text style={s.rateLabel}>Private</Text>
-                <Text style={s.price}>{formatMoney(item.price, currency)}</Text>
-              </View>
-              <View style={s.rate}>
-                <Text style={s.rateLabel}>Taxi</Text>
-                <Text style={[s.price, !hasDifferentTaxiRate(item) && { color: colors.muted }]}>
-                  {formatMoney(rateFor(item, 'TAXI'), currency)}
-                </Text>
-              </View>
+              {(categories.length ? categories : [null]).map((c) => (
+                <View key={c?.id ?? 'base'} style={s.rate}>
+                  <Text style={s.rateLabel} numberOfLines={1}>
+                    {c?.name ?? 'Rate'}
+                  </Text>
+                  <Text
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    style={[s.price, c && !isDefaultCategory(c) && !hasOwnRate(item, c.id) && { color: colors.muted }]}>
+                    {formatMoney(c ? rateFor(item, c.id) : item.price, currency)}
+                  </Text>
+                </View>
+              ))}
               <View style={[s.rate, { alignItems: 'flex-end' }]}>
                 <Text style={s.rateLabel}>Time</Text>
                 <Text style={s.duration}>{formatDuration(item.durationMinutes)}</Text>
@@ -100,12 +105,13 @@ const s = StyleSheet.create({
   desc: { color: colors.muted, marginTop: 4, fontSize: 14 },
   rates: {
     flexDirection: 'row',
+    gap: space.xs,
     marginTop: space.md,
     paddingTop: space.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
   },
-  rate: { flex: 1 },
+  rate: { flex: 1, minWidth: 0 },
   rateLabel: { fontSize: 12, color: colors.muted, fontWeight: '600' },
   price: { fontSize: 17, fontWeight: '800', color: colors.primary, marginTop: 2 },
   duration: { fontSize: 15, fontWeight: '600', color: colors.text, marginTop: 3 },

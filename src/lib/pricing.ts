@@ -1,39 +1,50 @@
-import type { Booking, Service, VehicleCategory } from '@/api';
+import { DEFAULT_CATEGORY_CODE, type Booking, type BookingItem, type Service, type VehicleCategory } from '@/api';
 
-// Separate taxi / private rates. The backend change is described in
-// docs/backend-taxi-rates.md; until it ships, services come back without a
-// `taxiPrice` key and everything falls back to the single (private) price.
+type Priced = Pick<Service, 'price' | 'rates'>;
 
-type Priced = Pick<Service, 'price' | 'taxiPrice'>;
-
-/** True once the server returns the taxiPrice field on services. */
-export function supportsTaxiRates(services: Priced[] | undefined | null) {
-  return !!services?.some((s) => s && 'taxiPrice' in s);
+/** A service's rate for a vehicle type: its own rate for that type, else the base price. */
+export function rateFor(service: Priced, categoryId: string | null | undefined) {
+  const rate = categoryId ? service.rates?.find((r) => r.categoryId === categoryId) : undefined;
+  return rate ? rate.price : service.price;
 }
 
-/** Rate for a vehicle category; taxis fall back to the private price when no taxi rate is set. */
-export function rateFor(service: Priced, category: VehicleCategory) {
-  if (category === 'TAXI' && service.taxiPrice !== null && service.taxiPrice !== undefined && service.taxiPrice !== '') {
-    return service.taxiPrice;
-  }
-  return service.price;
+/** True when this vehicle type is charged something other than the base price. */
+export function hasOwnRate(service: Priced, categoryId: string) {
+  return Number(rateFor(service, categoryId)) !== Number(service.price);
 }
 
-export function hasDifferentTaxiRate(service: Priced) {
-  return rateFor(service, 'TAXI') !== service.price && Number(rateFor(service, 'TAXI')) !== Number(service.price);
+/** The services in a booking; bookings made before multi-service have just their one service. */
+export function bookingItems(b: Pick<Booking, 'items' | 'service' | 'serviceId' | 'price'>): BookingItem[] {
+  if (b.items?.length) return b.items;
+  if (!b.service) return [];
+  return [
+    {
+      id: b.serviceId,
+      serviceId: b.serviceId,
+      name: b.service.name,
+      price: b.price ?? b.service.price,
+      durationMinutes: b.service.durationMinutes ?? 0,
+    },
+  ];
 }
 
-/** What a booking was charged: the server's recorded price if present, else the service's rate. */
-export function bookingAmount(b: Pick<Booking, 'price' | 'vehicleCategory' | 'service'>) {
+/** "Basic Wash + Polish". */
+export const serviceNames = (b: Pick<Booking, 'items' | 'service' | 'serviceId' | 'price'>) =>
+  bookingItems(b).map((i) => i.name).join(' + ') || 'Service';
+
+/** What a booking was charged: its recorded total, else the sum of its services. */
+export function bookingAmount(b: Pick<Booking, 'price' | 'items' | 'service' | 'serviceId'>) {
   if (b.price !== undefined && b.price !== null) return b.price;
-  if (!b.service) return undefined;
-  return rateFor(b.service, b.vehicleCategory === 'TAXI' ? 'TAXI' : 'PRIVATE');
+  const items = bookingItems(b);
+  return items.length ? items.reduce((sum, i) => sum + Number(i.price), 0) : undefined;
 }
 
-/** Before backend support, taxi washes are flagged in the booking notes instead. */
-export const TAXI_NOTE = 'Taxi';
-
-export function isTaxiBooking(b: Pick<Booking, 'vehicleCategory' | 'notes'>) {
-  if (b.vehicleCategory) return b.vehicleCategory === 'TAXI';
-  return !!b.notes && new RegExp(`^${TAXI_NOTE}\\b`).test(b.notes);
+/** The vehicle type a booking was charged as. */
+export function bookingCategory(b: Pick<Booking, 'category' | 'vehicleCategory'>) {
+  if (b.category) return b.category;
+  return b.vehicleCategory === 'TAXI'
+    ? { id: '', code: 'TAXI', name: 'Taxi' }
+    : { id: '', code: DEFAULT_CATEGORY_CODE, name: 'Private' };
 }
+
+export const isDefaultCategory = (c: Pick<VehicleCategory, 'code'>) => c.code === DEFAULT_CATEGORY_CODE;

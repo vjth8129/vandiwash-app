@@ -11,6 +11,7 @@ import { Button, Card, EmptyState, Loading, SectionTitle, TextField } from '@/co
 import { useQuery } from '@/hooks/useQuery';
 import { confirm } from '@/lib/confirm';
 import { groupByModule, roleLabel } from '@/lib/roles';
+import { firstError, maxLengthError, nameError } from '@/lib/validation';
 
 /** View / edit a role, or create one when id is "new". */
 export default function RoleScreen() {
@@ -62,6 +63,11 @@ function RoleEditor({ role, catalog }: { role: Role | null; catalog: Permission[
   const [description, setDescription] = useState(role?.description ?? '');
   const [selected, setSelected] = useState(() => new Set(role?.permissions.map((p) => p.id) ?? []));
   const [busy, setBusy] = useState<'save' | 'delete' | 'reset' | null>(null);
+  const [showErrors, setShowErrors] = useState(false);
+  const errors = {
+    name: nameError(name, 'role name', { max: 100 }),
+    description: maxLengthError(description, 500, 'description'),
+  };
 
   const toggle = (permId: string) =>
     setSelected((prev) => {
@@ -82,7 +88,11 @@ function RoleEditor({ role, catalog }: { role: Role | null; catalog: Permission[
   };
 
   const save = async () => {
-    if (editDetails && !name.trim()) return toast.error('Give the role a name.');
+    if (editDetails) {
+      setShowErrors(true);
+      const problem = firstError(errors);
+      if (problem) return toast.error(problem);
+    }
     setBusy('save');
     try {
       const permissionIds = [...selected];
@@ -153,8 +163,22 @@ function RoleEditor({ role, catalog }: { role: Role | null; catalog: Permission[
           !!role?.description && <Text style={[s.sub, { marginBottom: space.lg }]}>{role.description}</Text>
         ) : (
           <>
-            <TextField label="Role name *" value={name} onChangeText={setName} placeholder="e.g. Receptionist" />
-            <TextField label="Description" value={description} onChangeText={setDescription} placeholder="Optional" />
+            <TextField
+              label="Role name *"
+              value={name}
+              onChangeText={setName}
+              placeholder="e.g. Receptionist"
+              maxLength={100}
+              error={showErrors ? errors.name : null}
+            />
+            <TextField
+              label="Description"
+              value={description}
+              onChangeText={setDescription}
+              placeholder="Optional"
+              maxLength={500}
+              error={showErrors ? errors.description : null}
+            />
           </>
         )}
 

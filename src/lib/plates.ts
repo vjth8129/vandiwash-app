@@ -64,6 +64,33 @@ const clean = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
 export const plateString = (p: PlateParts) =>
   clean(p.manual ?? p.state + p.district + p.series + p.number);
 
-/** Series letters are optional; manual entries just need a plausible length. */
-export const isPlateComplete = (p: PlateParts) =>
-  p.manual !== null ? clean(p.manual).length >= 4 : !!p.state && p.district.length > 0 && p.number.length > 0;
+const STATE_CODES = new Set(PLATE_STATES.map(([code]) => code));
+
+/** Regular plate: KL 07 AB 1234 (series letters optional, district 1–2 digits, number 1–4 digits). */
+const STANDARD_RE = /^([A-Z]{2})(\d{1,2})([A-Z]{0,3})(\d{1,4})$/;
+/** Bharat series: YY BH #### XX, e.g. 25 BH 0345 CD (year, "BH", 4 digits, 1–2 letters). */
+const BHARAT_RE = /^(\d{2})BH(\d{4})([A-Z]{1,2})$/;
+
+export const PLATE_FORMATS_HINT = 'Accepts KL 07 AB 1234 or Bharat series 25 BH 0345 CD.';
+
+/** Why this plate can't be saved, or null if it's a valid Indian registration number. */
+export function plateError(p: PlateParts): string | null {
+  if (p.manual !== null) {
+    const reg = clean(p.manual);
+    if (!reg) return 'Enter the vehicle number.';
+    if (BHARAT_RE.test(reg)) return null;
+    const m = STANDARD_RE.exec(reg);
+    if (!m) return `That doesn’t look like a vehicle number. ${PLATE_FORMATS_HINT}`;
+    if (!STATE_CODES.has(m[1])) return `“${m[1]}” isn’t an Indian state code.`;
+    if (Number(m[2]) === 0 || Number(m[4]) === 0) return 'The district and number can’t be 0.';
+    return null;
+  }
+  if (!p.state) return 'Choose the state.';
+  if (!p.district) return 'Enter the district code, e.g. 07.';
+  if (Number(p.district) === 0) return 'The district code can’t be 00.';
+  if (!p.number) return 'Enter the number, e.g. 1234.';
+  if (Number(p.number) === 0) return 'The number can’t be 0000.';
+  return null;
+}
+
+export const isPlateComplete = (p: PlateParts) => plateError(p) === null;

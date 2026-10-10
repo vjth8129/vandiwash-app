@@ -5,16 +5,20 @@ import { FlatList, RefreshControl, ScrollView, StyleSheet, Text, View } from 're
 
 import { useAuth } from '@/auth/AuthContext';
 import { colors, radius, space } from '@/components/theme';
-import { Badge, Card, Chip, EmptyState, Loading, SectionTitle, Segmented, TextField } from '@/components/ui';
+import { PAID_BADGE, UNPAID_BADGE } from '@/components/OrderCard';
+import { Badge, Card, Chip, EmptyState, Loading, SectionTitle, TextField } from '@/components/ui';
 import { useQuery } from '@/hooks/useQuery';
 import { formatDay, formatMoney, formatTimestamp, toDateString } from '@/lib/format';
+import { isDefaultCategory } from '@/lib/pricing';
 import {
   buildReport,
+  categoryKey,
   completedDay,
   fetchCompletedSince,
-  isTaxiOrder,
   isValidDate,
   orderAmount,
+  orderCategory,
+  orderLines,
   PERIODS,
   periodRange,
   type Breakdown,
@@ -22,9 +26,7 @@ import {
   type Period,
 } from '@/lib/report';
 
-type Use = 'ALL' | 'PRIVATE' | 'TAXI';
-
-/** Finance report: revenue from completed washes, filtered by date, service and private/taxi. */
+/** Finance report: revenue from completed washes, filtered by date, service and vehicle type, with splits. */
 export default function ReportsScreen() {
   const { config } = useAuth();
   const money = (n: number) => formatMoney(n, config?.currency);
@@ -33,7 +35,7 @@ export default function ReportsScreen() {
   const [customFrom, setCustomFrom] = useState(() => periodRange('month').from);
   const [customTo, setCustomTo] = useState(() => toDateString(new Date()));
   const [serviceId, setServiceId] = useState<string | null>(null);
-  const [use, setUse] = useState<Use>('ALL');
+  const [typeKey, setTypeKey] = useState<string | null>(null);
 
   const customError =
     period !== 'custom'
@@ -49,23 +51,30 @@ export default function ReportsScreen() {
   const { data, loading, refreshing, refresh } = useQuery(() => fetchCompletedSince(range.from), [range.from]);
 
   const report = useMemo(
-    () => buildReport(data?.orders ?? [], { range, serviceId, use }),
+    () => buildReport(data?.orders ?? [], { range, serviceId, categoryKey: typeKey }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [data, range.from, range.to, serviceId, use],
+    [data, range.from, range.to, serviceId, typeKey],
   );
 
-  // Services that appear in the loaded jobs, for the service filter.
-  const services = useMemo(() => {
-    const map = new Map<string, string>();
+  // Services and vehicle types that appear in the loaded jobs, for the filters.
+  const { services, types } = useMemo(() => {
+    const serviceMap = new Map<string, string>();
+    const typeMap = new Map<string, string>();
     for (const o of data?.orders ?? []) {
-      if (o.booking?.serviceId) map.set(o.booking.serviceId, o.booking.service?.name ?? 'Service');
+      for (const l of orderLines(o)) serviceMap.set(l.serviceId, l.name);
+      const c = orderCategory(o);
+      if (c) typeMap.set(categoryKey(c), c.name);
     }
-    return [...map].sort((a, b) => a[1].localeCompare(b[1]));
+    const byName = (a: [string, string], b: [string, string]) => a[1].localeCompare(b[1]);
+    return { services: [...serviceMap].sort(byName), types: [...typeMap].sort(byName) };
   }, [data]);
+  const unpaid = report.byPayment.find((r) => r.key === 'NONE');
 
   const rangeLabel = range.from === range.to ? formatDay(range.from) : `${formatDay(range.from)} – ${formatDay(range.to)}`;
   const maxService = Math.max(1, ...report.byService.map((r) => r.revenue));
   const maxDay = Math.max(1, ...report.byDay.map((r) => r.revenue));
+  const maxCategory = Math.max(1, ...report.byCategory.map((r) => r.revenue));
+  const maxPayment = Math.max(1, ...report.byPayment.map((r) => r.revenue));
 
   const header = (
     <View>
@@ -102,15 +111,14 @@ export default function ReportsScreen() {
         </View>
       )}
 
-      <Segmented
-        value={use}
-        onChange={setUse}
-        options={[
-          ['ALL', 'All cars'],
-          ['PRIVATE', 'Private'],
-          ['TAXI', 'Taxi'],
-        ]}
-      />
+      {types.length > 1 && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>
+          <Chip label="All vehicle types" selected={!typeKey} onPress={() => setTypeKey(null)} />
+          {types.map(([key, name]) => (
+            <Chip key={key} label={name} selected={typeKey === key} onPress={() => setTypeKey(typeKey === key ? null : key)} />
+          ))}
+        </ScrollView>
+      )}
 
       {services.length > 1 && (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>
@@ -128,12 +136,30 @@ export default function ReportsScreen() {
         <View style={s.statsRow}>
           <Stat label="Washes" value={String(report.count)} />
           <Stat label="Average" value={money(report.average)} />
-          <Stat label="Taxi" value={`${money(report.taxiRevenue)} · ${report.taxiCount}`} />
+          <Stat label="Not paid" value={unpaid ? `${money(unpaid.revenue)} · ${unpaid.count}` : money(0)} />
         </View>
       </Card>
 
       {data?.truncated && (
         <Text style={s.note}>Showing the most recent 1,000 completed washes — older ones aren’t included.</Text>
+      )}
+
+      {report.byPayment.length > 0 && (
+        <Card style={s.section}>
+          <SectionTitle>By payment</SectionTitle>
+          {report.byPayment.map((r) => (
+            <BarRow key={r.key} row={r} max={maxPayment} money={money} />
+          ))}
+        </Card>
+      )}
+
+      {report.byCategory.length > 0 && (
+        <Card style={s.section}>
+          <SectionTitle>By vehicle type</SectionTitle>
+          {report.byCategory.map((r) => (
+            <BarRow key={r.key} row={r} max={maxCategory} money={money} />
+          ))}
+        </Card>
       )}
 
       {report.byService.length > 0 && (
@@ -172,15 +198,17 @@ export default function ReportsScreen() {
       ListEmptyComponent={<EmptyState icon="receipt-outline" title="No completed washes" message={`Nothing was completed ${period === 'today' ? 'today' : 'in this period'}.`} />}
       renderItem={({ item: o }) => {
         const b = o.booking;
+        const type = orderCategory(o);
         return (
           <Card onPress={() => router.push({ pathname: '/order/[id]', params: { id: o.id } })} style={s.item}>
             <View style={{ flex: 1 }}>
               <View style={[s.row, { alignItems: 'center' }]}>
                 <Text style={s.reg}>{b?.vehicle?.registrationNumber ?? 'Vehicle'}</Text>
-                {isTaxiOrder(o) && <Badge label="Taxi" color="#7A4B00" bg="#FFE9B8" />}
+                {type && !isDefaultCategory(type) && <Badge label={type.name} color="#7A4B00" bg="#FFE9B8" />}
+                <Badge {...(o.paidAt ? { ...PAID_BADGE, label: o.paymentMethod === 'CASH' ? 'Cash' : 'UPI' } : UNPAID_BADGE)} />
               </View>
               <Text style={s.sub} numberOfLines={1}>
-                {[b?.service?.name, b?.customer?.name].filter(Boolean).join(' · ')}
+                {[orderLines(o).map((l) => l.name).join(' + '), b?.customer?.name].filter(Boolean).join(' · ')}
               </Text>
               <View style={[s.row, { alignItems: 'center', gap: 4, marginTop: 4 }]}>
                 <Ionicons name="checkmark-done" size={14} color={colors.success} />

@@ -1,17 +1,19 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { KeyboardAvoidingView, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { KeyboardAvoidingView, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { errorMessage, servicesApi, type Service, type ServiceInput } from '@/api';
+import { errorMessage, servicesApi, type Service, type ServiceInput, type VehicleCategory } from '@/api';
 import { useAuth } from '@/auth/AuthContext';
 import { colors, space } from '@/components/theme';
 import { toast } from '@/components/Toast';
 import { Badge, Button, Card, Chip, EmptyState, Loading, Row, SectionTitle, TextField } from '@/components/ui';
 import { useQuery } from '@/hooks/useQuery';
+import { useVehicleCategories } from '@/hooks/useVehicleCategories';
 import { confirm } from '@/lib/confirm';
 import { formatDuration, formatMoney } from '@/lib/format';
-import { hasDifferentTaxiRate, rateFor, supportsTaxiRates } from '@/lib/pricing';
+import { hasOwnRate, isDefaultCategory, rateFor } from '@/lib/pricing';
+import { amountError, firstError, maxLengthError, minutesError, nameError } from '@/lib/validation';
 
 const DURATIONS = [15, 20, 30, 45, 60, 90, 120];
 
@@ -20,17 +22,10 @@ export default function ServiceScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const isNew = id === 'new';
 
-  const data = useQuery(async () => {
-    if (!isNew) {
-      const service = await servicesApi.get(id);
-      return { service, taxiSupported: supportsTaxiRates([service]) };
-    }
-    // New service: look at any existing service to see whether the server has taxi rates yet.
-    const sample = await servicesApi.list({ limit: 1 });
-    return { service: null, taxiSupported: supportsTaxiRates(sample.items) };
-  }, [id]);
+  const data = useQuery(async () => ({ service: isNew ? null : await servicesApi.get(id) }), [id]);
+  const types = useVehicleCategories();
 
-  if (data.loading) return <Loading />;
+  if (data.loading || types.loading) return <Loading />;
   if (!data.data || (!isNew && !data.data.service)) {
     return (
       <EmptyState
@@ -47,8 +42,8 @@ export default function ServiceScreen() {
       <ServiceEditor
         key={id}
         service={data.data.service}
-        taxiSupported={data.data.taxiSupported}
-        onSaved={(s) => data.setData({ service: s, taxiSupported: data.data!.taxiSupported })}
+        categories={types.categories}
+        onSaved={(s) => data.setData({ service: s })}
       />
     </>
   );
@@ -56,11 +51,11 @@ export default function ServiceScreen() {
 
 function ServiceEditor({
   service,
-  taxiSupported,
+  categories,
   onSaved,
 }: {
   service: Service | null;
-  taxiSupported: boolean;
+  categories: VehicleCategory[];
   onSaved: (s: Service) => void;
 }) {
   const { can, config } = useAuth();
@@ -71,12 +66,31 @@ function ServiceEditor({
   const [name, setName] = useState(service?.name ?? '');
   const [description, setDescription] = useState(service?.description ?? '');
   const [price, setPrice] = useState(service ? String(Number(service.price)) : '');
-  const [sameTaxiRate, setSameTaxiRate] = useState(!service || !hasDifferentTaxiRate(service));
-  const [taxiPrice, setTaxiPrice] = useState(
-    service && hasDifferentTaxiRate(service) ? String(Number(rateFor(service, 'TAXI'))) : '',
+  // The base price is the default type's (Private) rate; other types may have their own.
+  const baseCategory = categories.find(isDefaultCategory);
+  const otherCategories = categories.filter((c) => !isDefaultCategory(c));
+  const [rates, setRates] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      otherCategories
+        .filter((c) => service && hasOwnRate(service, c.id))
+        .map((c) => [c.id, String(Number(rateFor(service!, c.id)))]),
+    ),
   );
   const [duration, setDuration] = useState(service ? String(service.durationMinutes) : '30');
   const [busy, setBusy] = useState<'save' | 'status' | null>(null);
+  const [showErrors, setShowErrors] = useState(false);
+
+  const errors = {
+    name: nameError(name, 'service name'),
+    description: maxLengthError(description, 1000, 'description'),
+    price: amountError(price, 'private vehicle rate'),
+    rates:
+      otherCategories
+        .map((c) => (rates[c.id]?.trim() ? amountError(rates[c.id], `${c.name.toLowerCase()} rate`) : null))
+        .find(Boolean) ?? null,
+    duration: minutesError(duration),
+  };
+  const shown = (key: keyof typeof errors) => (showErrors ? errors[key] : null);
 
   const run = async (key: 'save' | 'status', fn: () => Promise<void>) => {
     setBusy(key);
@@ -92,29 +106,32 @@ function ServiceEditor({
   const save = () =>
     run('save', async () => {
       const p = Number(price);
-      const t = Number(taxiPrice);
       const d = Number(duration);
-      if (!name.trim()) throw new Error('Enter a service name.');
-      if (!price.trim() || !Number.isFinite(p) || p < 0) throw new Error('Enter a valid private vehicle rate.');
-      if (taxiSupported && !sameTaxiRate && (!taxiPrice.trim() || !Number.isFinite(t) || t < 0)) {
-        throw new Error('Enter a valid taxi rate, or switch on “Same rate for taxis”.');
-      }
-      if (!Number.isInteger(d) || d <= 0) throw new Error('Enter the duration in whole minutes.');
+      setShowErrors(true);
+      const problem = firstError(errors);
+      if (problem) throw new Error(problem);
 
       const body: ServiceInput = {
         name: name.trim(),
         description: description.trim() || undefined,
         price: p,
         durationMinutes: d,
-        // Only sent once the server supports it, so today's API doesn't reject the request.
-        ...(taxiSupported ? { taxiPrice: sameTaxiRate ? null : t } : {}),
+        rates: [
+          ...otherCategories
+            .filter((c) => rates[c.id]?.trim() && Number(rates[c.id]) !== p)
+            .map((c) => ({ categoryId: c.id, price: Number(rates[c.id]) })),
+          // Keep rates for types that are currently switched off in the admin portal.
+          ...(service?.rates ?? [])
+            .filter((r) => !categories.some((c) => c.id === r.categoryId))
+            .map((r) => ({ categoryId: r.categoryId, price: Number(r.price) })),
+        ],
       };
       if (isNew) {
         const created = await servicesApi.create(body);
         router.replace({ pathname: '/service/[id]', params: { id: created.id } });
       } else {
         const updated = await servicesApi.update(service.id, body);
-        onSaved({ ...service, ...body, ...updated });
+        onSaved({ ...service, ...updated });
         toast.success('Changes saved.');
       }
     });
@@ -154,8 +171,13 @@ function ServiceEditor({
             {service.status !== 'ACTIVE' && <Badge label="Inactive" color={colors.muted} bg="#E6EAEE" />}
           </View>
           {!!service.description && <Text style={s.desc}>{service.description}</Text>}
-          <Row icon="car-outline" label="Private" value={formatMoney(service.price, currency)} />
-          <Row icon="car-sport-outline" label="Taxi" value={formatMoney(rateFor(service, 'TAXI'), currency)} />
+          {categories.length ? (
+            categories.map((c) => (
+              <Row key={c.id} icon="car-outline" label={c.name} value={formatMoney(rateFor(service, c.id), currency)} />
+            ))
+          ) : (
+            <Row icon="car-outline" label="Rate" value={formatMoney(service.price, currency)} />
+          )}
           <Row icon="time-outline" label="Duration" value={formatDuration(service.durationMinutes)} />
         </Card>
         {service.status === 'ACTIVE' && can('BOOKINGS_CREATE') && can('ORDERS_CREATE') && (
@@ -181,51 +203,50 @@ function ServiceEditor({
         )}
 
         <SectionTitle>Details</SectionTitle>
-        <TextField label="Service name *" value={name} onChangeText={setName} placeholder="e.g. Premium Wash" />
+        <TextField
+          label="Service name *"
+          value={name}
+          onChangeText={setName}
+          placeholder="e.g. Premium Wash"
+          maxLength={150}
+          error={shown('name')}
+        />
         <TextField
           label="Description"
           value={description}
           onChangeText={setDescription}
           placeholder="What's included"
+          maxLength={1000}
+          error={shown('description')}
           multiline
         />
 
         <SectionTitle>Rates ({currency ?? 'INR'})</SectionTitle>
         <Card style={{ marginBottom: space.lg }}>
           <TextField
-            label="Private vehicle rate *"
+            label={`${baseCategory?.name ?? 'Private'} rate *`}
             value={price}
             onChangeText={setPrice}
             keyboardType="decimal-pad"
             placeholder="e.g. 399"
+            maxLength={10}
+            error={shown('price')}
+            hint={otherCategories.length ? 'Also charged for any vehicle type below left empty.' : undefined}
           />
-          <View style={s.switchRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={s.switchLabel}>Same rate for taxis</Text>
-              <Text style={s.hint}>
-                {taxiSupported
-                  ? 'Turn off to charge taxis a different rate.'
-                  : 'Taxi rates need a server update. Until then taxis are charged the private rate.'}
-              </Text>
-            </View>
-            <Switch
-              value={taxiSupported ? sameTaxiRate : true}
-              onValueChange={setSameTaxiRate}
-              disabled={!taxiSupported}
-              trackColor={{ true: colors.primary }}
+          {otherCategories.map((c) => (
+            <TextField
+              key={c.id}
+              label={`${c.name} rate`}
+              value={rates[c.id] ?? ''}
+              onChangeText={(t) => setRates((r) => ({ ...r, [c.id]: t }))}
+              keyboardType="decimal-pad"
+              placeholder={`Same as ${baseCategory?.name ?? 'private'}${price.trim() ? ` (${formatMoney(price, currency)})` : ''}`}
+              maxLength={10}
+              error={
+                showErrors && rates[c.id]?.trim() ? amountError(rates[c.id], `${c.name.toLowerCase()} rate`) : null
+              }
             />
-          </View>
-          {taxiSupported && !sameTaxiRate && (
-            <View style={{ marginTop: space.lg }}>
-              <TextField
-                label="Taxi rate *"
-                value={taxiPrice}
-                onChangeText={setTaxiPrice}
-                keyboardType="decimal-pad"
-                placeholder="e.g. 349"
-              />
-            </View>
-          )}
+          ))}
         </Card>
 
         <SectionTitle>Duration</SectionTitle>
@@ -234,7 +255,14 @@ function ServiceEditor({
             <Chip key={m} label={formatDuration(m)} selected={duration === String(m)} onPress={() => setDuration(String(m))} />
           ))}
         </View>
-        <TextField label="Minutes" value={duration} onChangeText={setDuration} keyboardType="number-pad" />
+        <TextField
+          label="Minutes"
+          value={duration}
+          onChangeText={(t) => setDuration(t.replace(/\D/g, ''))}
+          keyboardType="number-pad"
+          maxLength={4}
+          error={shown('duration')}
+        />
 
         <Button
           title={isNew ? 'Create service' : 'Save changes'}
@@ -275,8 +303,6 @@ const s = StyleSheet.create({
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.sm },
   title: { fontSize: 22, fontWeight: '800', color: colors.text, flex: 1 },
   desc: { color: colors.muted, fontSize: 14, marginTop: 4, marginBottom: space.sm },
-  switchRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
-  switchLabel: { fontSize: 15, fontWeight: '700', color: colors.text },
   hint: { fontSize: 12, color: colors.muted, marginTop: 2 },
   wrap: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   inactive: {

@@ -8,6 +8,7 @@ import type {
   LoginResult,
   Me,
   Order,
+  PaymentMethod,
   PaymentQr,
   OrderStatus,
   Permission,
@@ -63,9 +64,15 @@ export type ServiceInput = {
   description?: string;
   price: number;
   durationMinutes: number;
-  /** Only send once the backend supports it (see lib/pricing.ts). */
-  taxiPrice?: number | null;
+  /** The full list of per-type rates; types left out are charged `price`. */
+  rates?: { categoryId: string; price: number | null }[];
   status?: ServiceStatus;
+};
+
+// Vehicle types (Private, Taxi, ...) -------------------------------------------
+export const vehicleCategoriesApi = {
+  /** Active types, in display order. */
+  list: () => http.get<VehicleCategory[]>('/vehicle-categories'),
 };
 
 export const servicesApi = {
@@ -95,6 +102,7 @@ export type NewVehicle = {
   brand?: string;
   model?: string;
   vehicleType?: VehicleType;
+  categoryId?: string;
 };
 
 export const vehiclesApi = {
@@ -108,12 +116,13 @@ export const vehiclesApi = {
 export type NewBooking = {
   customerId: string;
   vehicleId: string;
-  serviceId: string;
+  /** One or more services, in the order chosen. */
+  serviceIds: string[];
   bookingDate: string; // YYYY-MM-DD
   startTime: string; // HH:mm
   notes?: string;
-  /** Only send once the backend supports it (see lib/pricing.ts). */
-  vehicleCategory?: VehicleCategory;
+  /** Also saved on the vehicle for next time. Defaults to the vehicle's own type. */
+  vehicleCategoryId?: string;
 };
 
 export const bookingsApi = {
@@ -131,13 +140,17 @@ export const bookingsApi = {
 
 // Orders (jobs) ---------------------------------------------------------------
 export const ordersApi = {
-  list: (q: { status?: OrderStatus; page?: number; limit?: number } = {}) =>
-    http.list<Order>('/orders', q),
+  list: (
+    q: { status?: OrderStatus; paymentStatus?: 'PAID' | 'UNPAID'; page?: number; limit?: number } = {},
+  ) => http.list<Order>('/orders', q),
   get: (id: string) => http.get<Order>(`/orders/${id}`),
   /** Check a booking in — creates the order/job and confirms the booking. */
   checkIn: (bookingId: string) => http.post<Order>('/orders', { bookingId }),
   setStatus: (id: string, status: Exclude<OrderStatus, 'CREATED'>) =>
     http.patch<Order>(`/orders/${id}`, { status }),
+  /** Note how the customer paid; null undoes it. */
+  recordPayment: (id: string, method: PaymentMethod | null) =>
+    http.put<Order>(`/orders/${id}/payment`, { method }),
 };
 
 // Users (team) ----------------------------------------------------------------

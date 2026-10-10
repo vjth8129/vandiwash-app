@@ -3,11 +3,12 @@ import { useState } from 'react';
 import { ScrollView, Text } from 'react-native';
 
 import { authApi, errorMessage } from '@/api';
-import { AccountField, toAccountIdentifier, type AccountMode } from '@/components/AccountField';
+import { AccountField, accountError, toAccountIdentifier, type AccountMode } from '@/components/AccountField';
 import { colors, space } from '@/components/theme';
 import { toast } from '@/components/Toast';
 import { Button, Card, TextField, PasswordField } from '@/components/ui';
 import { PASSWORD_RULES } from '@/lib/password';
+import { confirmPasswordError, firstError, newPasswordError } from '@/lib/validation';
 
 // Two steps, matching the API: request a code for the account, then redeem it.
 export default function ForgotPasswordScreen() {
@@ -19,6 +20,15 @@ export default function ForgotPasswordScreen() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showErrors, setShowErrors] = useState(false);
+
+  const requestErrors = { account: accountError(mode, account) };
+  const resetErrors = {
+    code: code.length >= 4 ? null : 'Enter the reset code you received.',
+    password: newPasswordError(newPassword),
+    confirm: confirmPasswordError(newPassword, confirmPassword),
+  };
+  const shown = <K extends string>(errors: Record<K, string | null>, key: K) => (showErrors ? errors[key] : null);
 
   const run = async (fn: () => Promise<unknown>, next: typeof step) => {
     setBusy(true);
@@ -32,17 +42,20 @@ export default function ForgotPasswordScreen() {
     }
   };
 
-  const sendCode = () =>
-    run(async () => {
+  const sendCode = () => {
+    setShowErrors(true);
+    const problem = firstError(requestErrors);
+    if (problem) return toast.error(problem);
+    return run(async () => {
       await authApi.forgotPassword(toAccountIdentifier(mode, account));
       setNotice(`If ${account.trim()} has an account, a reset code has been sent.`);
-    }, 'reset');
+    }, 'reset').then(() => setShowErrors(false));
+  };
 
   const reset = () => {
-    if (newPassword !== confirmPassword) {
-      toast.error('The two passwords don’t match.');
-      return;
-    }
+    setShowErrors(true);
+    const problem = firstError(resetErrors);
+    if (problem) return toast.error(problem);
     run(() => authApi.resetPassword(toAccountIdentifier(mode, account), code.trim(), newPassword), 'done');
   };
 
@@ -53,8 +66,14 @@ export default function ForgotPasswordScreen() {
           <Text style={{ color: colors.muted, marginBottom: space.lg, fontSize: 15 }}>
             Enter the mobile number you sign in with and we’ll send you a reset code.
           </Text>
-          <AccountField mode={mode} onModeChange={setMode} value={account} onChangeText={setAccount} />
-          <Button title="Send code" loading={busy} disabled={!account.trim()} onPress={sendCode} />
+          <AccountField
+            mode={mode}
+            onModeChange={setMode}
+            value={account}
+            onChangeText={setAccount}
+            error={shown(requestErrors, 'account')}
+          />
+          <Button title="Send code" loading={busy} onPress={sendCode} />
         </>
       )}
 
@@ -68,6 +87,7 @@ export default function ForgotPasswordScreen() {
             keyboardType="number-pad"
             maxLength={6}
             placeholder="6-digit code"
+            error={shown(resetErrors, 'code')}
             hint={__DEV__ ? 'Testing: 1111 works on development servers.' : undefined}
           />
           <PasswordField
@@ -76,17 +96,18 @@ export default function ForgotPasswordScreen() {
             onChangeText={setNewPassword}
             autoCapitalize="none"
             hint={PASSWORD_RULES}
+            error={shown(resetErrors, 'password')}
           />
           <PasswordField
             label="Confirm new password"
             value={confirmPassword}
             onChangeText={setConfirmPassword}
             autoCapitalize="none"
+            error={shown(resetErrors, 'confirm')}
           />
           <Button
             title="Set new password"
             loading={busy}
-            disabled={code.length < 4 || !newPassword || !confirmPassword}
             onPress={reset}
           />
           <Button

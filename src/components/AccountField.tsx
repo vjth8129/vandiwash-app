@@ -2,6 +2,7 @@ import type { Ref } from 'react';
 import { Pressable, StyleSheet, Text, type TextInput, type TextInputProps } from 'react-native';
 
 import type { AccountIdentifier } from '@/api';
+import { phoneError, usernameError } from '@/lib/validation';
 import { colors } from './theme';
 import { TextField } from './ui';
 
@@ -11,7 +12,13 @@ export function toAccountIdentifier(mode: AccountMode, value: string): AccountId
   return mode === 'phone' ? { phone: value.trim() } : { username: value.trim() };
 }
 
+/** Error for the sign-in account field, or null. */
+export function accountError(mode: AccountMode, value: string): string | null {
+  return mode === 'phone' ? phoneError(value) : usernameError(value);
+}
+
 type Props = Omit<TextInputProps, 'value' | 'onChangeText'> & {
+  error?: string | null;
   mode: AccountMode;
   onModeChange: (mode: AccountMode) => void;
   value: string;
