@@ -13,6 +13,16 @@ import type {
   OrderStatus,
   Permission,
   Role,
+  SalesExportFormat,
+  SalesExportLink,
+  SalesQuery,
+  SalesReport,
+  AudienceCustomer,
+  AudienceQuery,
+  NewPromotion,
+  Promotion,
+  PromotionDetail,
+  PromotionStatus,
   Service,
   ServiceStatus,
   TokenPair,
@@ -24,7 +34,7 @@ import type {
 } from './types';
 
 export * from './types';
-export { ApiError, errorMessage } from './client';
+export { API_BASE_URL, ApiError, errorMessage } from './client';
 
 // Auth ------------------------------------------------------------------------
 export const authApi = {
@@ -151,6 +161,31 @@ export const ordersApi = {
   /** Note how the customer paid; null undoes it. */
   recordPayment: (id: string, method: PaymentMethod | null) =>
     http.put<Order>(`/orders/${id}/payment`, { method }),
+};
+
+// Reports ----------------------------------------------------------------------
+export const reportsApi = {
+  /** Completed washes between two local dates, totalled, charted and split every way. */
+  sales: (q: SalesQuery) => http.get<SalesReport>('/reports/sales', q),
+  /** A 5-minute link to the sales report as a PDF or Excel file (opened in the browser to download). */
+  exportLink: (q: Omit<SalesQuery, 'groupBy' | 'limit'> & { format: SalesExportFormat }) =>
+    // Unset filters are left out (the API doesn't take null for them).
+    http.post<SalesExportLink>('/reports/sales/export-link', Object.fromEntries(Object.entries(q).filter(([, v]) => v != null))),
+  /** The customers behind the matching washes — who a promotion can go to. */
+  customers: ({ notReturned, ...q }: AudienceQuery) =>
+    http.get<{ customers: AudienceCustomer[]; truncated: boolean }>('/reports/customers', {
+      ...q,
+      notReturned: notReturned ? 'true' : undefined,
+    }),
+};
+
+// Promotions -------------------------------------------------------------------
+export const promotionsApi = {
+  list: (q: { page?: number; limit?: number; status?: PromotionStatus } = {}) => http.list<Promotion>('/promotions', q),
+  get: (id: string) => http.get<PromotionDetail>(`/promotions/${id}`),
+  create: (body: NewPromotion) => http.post<PromotionDetail>('/promotions', body),
+  /** Only before it starts sending. */
+  cancel: (id: string) => http.post<PromotionDetail>(`/promotions/${id}/cancel`),
 };
 
 // Users (team) ----------------------------------------------------------------

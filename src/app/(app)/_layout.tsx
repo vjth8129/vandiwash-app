@@ -23,6 +23,10 @@ export default function AppLayout() {
       <Stack.Screen name="user/[id]" options={{ title: 'User' }} />
       <Stack.Screen name="role/[id]" options={{ title: 'Role' }} />
       <Stack.Screen name="service/[id]" options={{ title: 'Service' }} />
+      <Stack.Screen name="report/analytics" options={{ title: 'Analytics' }} />
+      <Stack.Screen name="report/promotions" options={{ title: 'Promotions' }} />
+      <Stack.Screen name="promotion/new" options={{ title: 'New promotion' }} />
+      <Stack.Screen name="promotion/[id]" options={{ title: 'Promotion' }} />
     </Stack>
   );
 }

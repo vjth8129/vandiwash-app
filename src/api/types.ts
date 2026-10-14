@@ -166,7 +166,8 @@ export type Booking = {
   /** The services in this wash, with the price charged for each. */
   items?: BookingItem[];
   customer?: Pick<Customer, 'id' | 'name' | 'phone'>;
-  vehicle?: Pick<Vehicle, 'id' | 'registrationNumber'>;
+  /** Body type and model aren't sent yet; the reports use them once the API includes them. */
+  vehicle?: Pick<Vehicle, 'id' | 'registrationNumber'> & Partial<Pick<Vehicle, 'vehicleType' | 'brand' | 'model'>>;
   service?: { id: string; name: string; price: number | string; taxiPrice?: number | string | null; durationMinutes?: number };
 };
 
@@ -241,3 +242,137 @@ export type User = {
   createdAt: string;
   role?: { id: string; name: string };
 };
+
+// ---- Sales report (GET /reports/sales) ----------------------------------------
+
+export type SalesBucket = 'hour' | 'day' | 'week' | 'month';
+
+export type SalesTotals = {
+  revenue: number;
+  washes: number;
+  average: number;
+  customers: number;
+  /** Revenue with a payment noted, and what's still owed. */
+  collected: number;
+  unpaid: number;
+  unpaidWashes: number;
+};
+
+/** One bucket or slice: `key` is a date/hour/id, `label` is display text. */
+export type SalesRow = { key: string; label: string; washes: number; revenue: number };
+
+export type SalesTransaction = {
+  id: string;
+  completedAt: string;
+  amount: number;
+  paidAt: string | null;
+  paymentMethod: PaymentMethod | null;
+  registrationNumber: string;
+  vehicleType: VehicleType;
+  category: { id: string; code: string; name: string } | null;
+  customer: { id: string; name: string; phone: string | null };
+  services: { serviceId: string; name: string; price: number }[];
+};
+
+export type SalesReport = {
+  range: { from: string; to: string; days: number };
+  timezone: string;
+  groupBy: SalesBucket;
+  totals: SalesTotals;
+  /** The period just before, cut at the same point when the range runs up to now. */
+  previous: SalesTotals & { from: string; to: string };
+  /** Oldest first, with empty buckets filled in. */
+  series: SalesRow[];
+  byHour: SalesRow[];
+  byService: SalesRow[];
+  byCategory: SalesRow[];
+  byVehicleType: SalesRow[];
+  /** Keys UPI, CASH, NONE (not paid). */
+  byPayment: SalesRow[];
+  transactions: SalesTransaction[];
+  options: { services: { id: string; name: string }[]; categories: { id: string; code: string; name: string }[] };
+};
+
+export type SalesQuery = {
+  from: string;
+  to: string;
+  groupBy?: SalesBucket;
+  serviceId?: string | null;
+  categoryId?: string | null;
+  vehicleType?: VehicleType | null;
+  paymentStatus?: 'PAID' | 'UNPAID' | null;
+  limit?: number;
+};
+
+// ---- Promotions ----------------------------------------------------------------
+
+/** SCHEDULED → SENDING → SENT (or FAILED when nothing went out); CANCELLED only before sending. */
+export type PromotionStatus = 'SCHEDULED' | 'SENDING' | 'SENT' | 'FAILED' | 'CANCELLED';
+export type PromotionChannel = 'WHATSAPP' | 'SMS';
+export type RecipientStatus = 'PENDING' | 'SENT' | 'FAILED' | 'SKIPPED';
+
+export type Promotion = {
+  id: string;
+  title: string;
+  /** {name} is replaced with each customer's first name. */
+  message: string;
+  channel: PromotionChannel;
+  status: PromotionStatus;
+  scheduledAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  cancelledAt: string | null;
+  audienceLabel: string | null;
+  audience: Record<string, unknown> | null;
+  recipientCount: number;
+  sentCount: number;
+  failedCount: number;
+  skippedCount: number;
+  /** "console" = the server only logged the messages (no SMS/WhatsApp provider connected). */
+  deliveryMode: string | null;
+  createdAt: string;
+  createdBy: { id: string; name: string } | null;
+};
+
+export type PromotionRecipient = {
+  id: string;
+  customerId: string | null;
+  name: string;
+  phone: string | null;
+  status: RecipientStatus;
+  sentAt: string | null;
+  error: string | null;
+};
+
+export type PromotionDetail = Promotion & { recipients: PromotionRecipient[] };
+
+export type NewPromotion = {
+  title: string;
+  message: string;
+  channel: PromotionChannel;
+  customerIds: string[];
+  /** ISO time; left out sends it now. */
+  sendAt?: string | null;
+  audienceLabel?: string;
+  audience?: Record<string, unknown>;
+};
+
+/** A customer behind a slice of sales (GET /reports/customers). */
+export type AudienceCustomer = {
+  id: string;
+  name: string;
+  phone: string | null;
+  visits: number;
+  spent: number;
+  firstVisit: string;
+  lastVisit: string;
+  returned: boolean;
+  vehicles: { registrationNumber: string; vehicleType: VehicleType; category: string | null }[];
+  services: string[];
+};
+
+export type AudienceQuery = Omit<SalesQuery, 'groupBy' | 'limit'> & { minVisits?: number; notReturned?: boolean };
+
+/** A short-lived download link for the sales report; `path` is relative to the API base URL. */
+export type SalesExportLink = { path: string; filename: string; expiresAt: string };
+export type SalesExportFormat = 'pdf' | 'xlsx';

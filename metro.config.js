@@ -31,7 +31,7 @@ config.server.enhanceMiddleware = (metroMiddleware) => async (req, res, next) =>
     });
 
     res.statusCode = upstream.status;
-    for (const name of ['content-type', 'retry-after', 'ratelimit-limit', 'ratelimit-remaining', 'ratelimit-reset']) {
+    for (const name of ['content-type', 'content-disposition', 'retry-after', 'ratelimit-limit', 'ratelimit-remaining', 'ratelimit-reset']) {
       const value = upstream.headers.get(name);
       if (value) res.setHeader(name, value);
     }
