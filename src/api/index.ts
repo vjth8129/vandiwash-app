@@ -25,6 +25,8 @@ import type {
   PromotionStatus,
   Service,
   ServiceStatus,
+  SignupInput,
+  SignupResult,
   TokenPair,
   User,
   UserStatus,
@@ -34,12 +36,14 @@ import type {
 } from './types';
 
 export * from './types';
-export { API_BASE_URL, ApiError, errorMessage } from './client';
+export { API_BASE_URL, ApiError, errorMessage, isCarWashBlockedCode, type CarWashBlockedCode } from './client';
 
 // Auth ------------------------------------------------------------------------
 export const authApi = {
   login: (account: AccountIdentifier, password: string) =>
     http.post<LoginResult>('/auth/login', { ...account, password }, { auth: false }),
+  /** A car wash owner signs up; nobody can sign in until a platform admin approves it. */
+  signup: (body: SignupInput) => http.post<SignupResult>('/auth/signup', body, { auth: false }),
   refresh: (refreshToken: string) =>
     http.post<TokenPair>('/auth/refresh', { refreshToken }, { auth: false }),
   logout: (refreshToken: string) =>

@@ -47,6 +47,30 @@ export type LoginResult = {
   user: LoginUser;
 };
 
+/** A car wash owner signing up from the app; the car wash starts out pending review. */
+export type SignupInput = {
+  name: string;
+  description?: string;
+  /** Business phone. */
+  phone?: string;
+  email?: string;
+  gstNumber: string;
+  address: string;
+  city: string;
+  state: string;
+  country?: string;
+  postalCode: string;
+  latitude: number;
+  longitude: number;
+  owner: { name: string; phone: string; email?: string; password: string };
+};
+
+export type SignupResult = {
+  carWash: { id: string; name: string; code: string; status: 'PENDING' };
+  owner: { name: string; phone: string };
+  message: string;
+};
+
 export type TokenPair = {
   accessToken: string;
   refreshToken: string;

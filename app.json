@@ -43,6 +43,12 @@
           "microphonePermission": false
         }
       ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Vahanly to use your location to pin your car wash on the map when you sign up."
+        }
+      ],
       "expo-status-bar",
       "expo-secure-store",
       "expo-font",

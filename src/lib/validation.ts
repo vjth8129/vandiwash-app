@@ -75,3 +75,25 @@ export function maxLengthError(value: string, max: number, label: string): strin
 
 /** First message in a set of field errors, for the toast shown when a form is submitted. */
 export const firstError = (errors: Record<string, string | null>) => Object.values(errors).find(Boolean) ?? null;
+
+/** GSTIN: 2-digit state code, PAN, entity number, "Z", check character - e.g. 29ABCDE1234F1Z5. */
+const GSTIN_PATTERN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+
+export function gstinError(value: string): string | null {
+  const v = value.trim().toUpperCase();
+  if (!v) return 'Enter your GSTIN.';
+  if (v.length !== 15) return 'The GSTIN has 15 characters, e.g. 29ABCDE1234F1Z5.';
+  return GSTIN_PATTERN.test(v) ? null : 'Check the GSTIN — it doesn’t look right, e.g. 29ABCDE1234F1Z5.';
+}
+
+/** A required free-text field with a minimum length. */
+export function requiredError(value: string, label: string, min = 2): string | null {
+  const v = value.trim();
+  if (!v) return `Enter the ${label}.`;
+  return v.length < min ? `The ${label} must be at least ${min} characters.` : null;
+}
+
+/** Optional phone field: empty is fine. */
+export function optionalPhoneError(value: string, label: string): string | null {
+  return value.trim() ? phoneError(value, label) : null;
+}

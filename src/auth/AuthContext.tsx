@@ -8,16 +8,30 @@ import {
   type PropsWithChildren,
 } from 'react';
 
-import { appApi, authApi, ApiError, errorMessage, type AccountIdentifier, type AppConfig, type Me } from '@/api';
+import {
+  appApi,
+  authApi,
+  ApiError,
+  errorMessage,
+  isCarWashBlockedCode,
+  type AccountIdentifier,
+  type AppConfig,
+  type CarWashBlockedCode,
+  type Me,
+} from '@/api';
 import {
   getRefreshToken,
   loadTokens,
   saveTokens,
+  setCarWashBlockedHandler,
   setPasswordChangeRequiredHandler,
   setSessionExpiredHandler,
 } from '@/api/client';
 
 type Status = 'loading' | 'signedOut' | 'signedIn' | 'offline';
+
+/** Why the user can't get in: their car wash is pending review, suspended or deactivated. */
+export type CarWashNotice = { code: CarWashBlockedCode; message: string };
 
 type AuthValue = {
   status: Status;
@@ -31,6 +45,9 @@ type AuthValue = {
   mustChangePassword: boolean;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   retry: () => void;
+  /** Set when sign-in or the session was refused because of the car wash's status. */
+  carWashNotice: CarWashNotice | null;
+  clearCarWashNotice: () => void;
   /** True if the logged-in user's role grants this permission code. */
   can: (permission: string) => boolean;
 };
@@ -58,6 +75,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<Me | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
+  const [carWashNotice, setCarWashNotice] = useState<CarWashNotice | null>(null);
 
   const loadSession = useCallback(async () => {
     const [me, cfg] = await Promise.all([authApi.me(), appApi.config().catch(() => null)]);
@@ -98,11 +116,17 @@ export function AuthProvider({ children }: PropsWithChildren) {
       setUser(null);
       setStatus('signedOut');
     });
+    setCarWashBlockedHandler((code, message) => {
+      setCarWashNotice({ code, message });
+      setUser(null);
+      setStatus('signedOut');
+    });
     setPasswordChangeRequiredHandler(() => {
       setUser((u) => (u && !u.mustChangePassword ? { ...u, mustChangePassword: true } : u));
     });
     return () => {
       setSessionExpiredHandler(null);
+      setCarWashBlockedHandler(null);
       setPasswordChangeRequiredHandler(null);
     };
   }, []);
@@ -119,7 +143,16 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   const signIn = useCallback(
     async (account: AccountIdentifier, password: string) => {
-      const result = await authApi.login(account, password);
+      setCarWashNotice(null);
+      let result;
+      try {
+        result = await authApi.login(account, password);
+      } catch (e) {
+        if (e instanceof ApiError && isCarWashBlockedCode(e.code)) {
+          setCarWashNotice({ code: e.code, message: e.message });
+        }
+        throw e;
+      }
       if (result.user.role === PLATFORM_ADMIN_ROLE) {
         authApi.logout(result.refreshToken).catch(() => {});
         throw new PlatformAdminError();
@@ -162,8 +195,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
         boot();
       },
       can: (p) => perms.has(p),
+      carWashNotice,
+      clearCarWashNotice: () => setCarWashNotice(null),
     };
-  }, [status, user, config, bootError, signIn, signOut, changePassword, boot]);
+  }, [status, user, config, bootError, signIn, signOut, changePassword, boot, carWashNotice]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

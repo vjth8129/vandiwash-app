@@ -31,6 +31,14 @@ export class ApiError extends Error {
 let tokens: TokenPair | null = null;
 let onSessionExpired: (() => void) | null = null;
 let onPasswordChangeRequired: (() => void) | null = null;
+let onCarWashBlocked: ((code: CarWashBlockedCode, message: string) => void) | null = null;
+
+/** Why a signed-in user's car wash can't be used right now (see the API's CarWashNotActiveError). */
+export type CarWashBlockedCode = 'CAR_WASH_PENDING' | 'CAR_WASH_SUSPENDED' | 'CAR_WASH_INACTIVE';
+
+export function isCarWashBlockedCode(code: unknown): code is CarWashBlockedCode {
+  return code === 'CAR_WASH_PENDING' || code === 'CAR_WASH_SUSPENDED' || code === 'CAR_WASH_INACTIVE';
+}
 
 export async function loadTokens(): Promise<TokenPair | null> {
   const [accessToken, refreshToken] = await Promise.all([
@@ -63,6 +71,11 @@ export function setPasswordChangeRequiredHandler(handler: (() => void) | null) {
   onPasswordChangeRequired = handler;
 }
 
+/** Called when the server says this user's car wash is pending, suspended or deactivated. */
+export function setCarWashBlockedHandler(handler: ((code: CarWashBlockedCode, message: string) => void) | null) {
+  onCarWashBlocked = handler;
+}
+
 // ---- refresh (single-flight: concurrent 401s share one refresh call) -------
 
 type RefreshResult = 'ok' | 'rejected' | 'unavailable';
@@ -77,7 +90,12 @@ async function refreshTokens(): Promise<RefreshResult> {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ refreshToken }),
     });
-    if (res.status === 400 || res.status === 401 || res.status === 403) return 'rejected';
+    if (res.status === 403) {
+      const err = (await res.json().catch(() => null))?.error;
+      if (isCarWashBlockedCode(err?.code)) onCarWashBlocked?.(err.code, err.message);
+      return 'rejected';
+    }
+    if (res.status === 400 || res.status === 401) return 'rejected';
     if (!res.ok) return 'unavailable';
     const body = (await res.json()) as ApiEnvelope<TokenPair>;
     await saveTokens({
@@ -143,7 +161,7 @@ async function send(method: Method, path: string, opts: RequestOptions): Promise
   }
 }
 
-async function parse<T>(res: Response): Promise<ApiEnvelope<T>> {
+async function parse<T>(res: Response, authenticated: boolean): Promise<ApiEnvelope<T>> {
   let body: any = null;
   try {
     body = await res.json();
@@ -161,6 +179,12 @@ async function parse<T>(res: Response): Promise<ApiEnvelope<T>> {
   }
   if (res.status === 403 && body?.error?.code === 'PASSWORD_CHANGE_REQUIRED') {
     onPasswordChangeRequired?.();
+  }
+  // Mid-session (e.g. an admin suspended the car wash): sign out and say why.
+  // A failed sign-in (auth: false) is handled by whoever called login.
+  if (authenticated && res.status === 403 && isCarWashBlockedCode(body?.error?.code)) {
+    await saveTokens(null);
+    onCarWashBlocked?.(body.error.code, body.error.message);
   }
   if (!res.ok || body?.success === false) {
     const err = body?.error;
@@ -186,7 +210,7 @@ async function request<T>(method: Method, path: string, opts: RequestOptions = {
     }
     // 'unavailable' (rate-limited / offline): keep the session; the 401 surfaces as an error.
   }
-  const body = await parse<T>(res);
+  const body = await parse<T>(res, opts.auth !== false);
   if (method !== 'GET') dataVersion++;
   return body;
 }

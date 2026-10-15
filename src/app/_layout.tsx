@@ -54,7 +54,7 @@ function RootNavigator() {
     <Stack
       // (app) and login handle the bottom inset themselves (tab bar / SafeAreaView).
       screenLayout={({ children, route }) =>
-        route.name === '(app)' || route.name === 'login' ? (
+        route.name === '(app)' || route.name === 'login' || route.name === 'pending' ? (
           <>{children}</>
         ) : (
           <BottomInset>{children}</BottomInset>
@@ -80,6 +80,11 @@ function RootNavigator() {
           name="forgot-password"
           options={{ headerShown: true, title: 'Reset password', headerBackTitle: 'Back' }}
         />
+        <Stack.Screen
+          name="signup"
+          options={{ headerShown: true, title: 'Sign up your car wash', headerBackTitle: 'Back' }}
+        />
+        <Stack.Screen name="pending" options={{ gestureEnabled: false }} />
       </Stack.Protected>
     </Stack>
   );
