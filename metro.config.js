@@ -5,7 +5,7 @@ const config = getDefaultConfig(__dirname);
 // Dev-only proxy for the web build: the API server doesn't send CORS headers for
 // browser origins, so the web app calls `/__api/...` on the dev server and it is
 // forwarded server-side. Native builds call the API directly and never hit this.
-const API_ORIGIN = (process.env.EXPO_PUBLIC_API_URL ?? 'https://65-1-30-38.nip.io/api/v1').replace(
+const API_ORIGIN = (process.env.EXPO_PUBLIC_API_URL ?? 'https://13-206-156-127.nip.io/api/v1').replace(
   /\/api\/v1\/?$/,
   '',
 );
